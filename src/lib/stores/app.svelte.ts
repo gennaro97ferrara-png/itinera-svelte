@@ -2,7 +2,7 @@ import type { Screen, Stop, POI, LatLng, NamedPoint, TravelMode } from '$lib/dom
 
 class AppStore {
   // navigation — si parte dal risultato (auto-generato al boot), non dal form
-  screen = $state<Screen>('route');
+  screen = $state<Screen>('home');
 
   // time budget
   minutes = $state(210);

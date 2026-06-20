@@ -95,7 +95,8 @@
   function autoGenerateOnce() {
     if (booted) return;
     booted = true;
-    onGenerate();
+    loading = false;
+    if (!app.stops.length) showScreen('home');
   }
 
   function setDemo() {
@@ -432,12 +433,24 @@
     { id: 'car',     label: 'Auto',    icon: 'ti-car',  verb: 'in auto' },
     { id: 'transit', label: 'Mezzi',   icon: 'ti-bus',  verb: 'coi mezzi' },
   ];
+  const EXPERIENCE_PRESETS = [
+    { id: 'classic', label: 'Classico', icon: 'ti-building-bank', minutes: 180, cats: ['musei', 'monumenti', 'storico', 'chiese'] },
+    { id: 'food', label: 'Cibo', icon: 'ti-tools-kitchen-2', minutes: 150, cats: ['ristoranti', 'pizza', 'caffe', 'gelati'] },
+    { id: 'hidden', label: 'Nascosto', icon: 'ti-compass', minutes: 210, cats: ['scoperte', 'storico', 'arte', 'panorami'] },
+    { id: 'relax', label: 'Relax', icon: 'ti-tree', minutes: 120, cats: ['parchi', 'piazze', 'panorami', 'caffe'] },
+  ];
   function modeInfo(m: TravelMode = app.mode) { return MODES.find(x => x.id === m) ?? MODES[0]; }
   let modeVerb = $derived(modeInfo().verb);
   let modeIcon = $derived(modeInfo().icon);
   function catColor(poi: import('$lib/domain/types').POI | null): string {
     const m = poi?.gem ? 'scoperte' : (poi?.macro ?? 'cultura');
     return MACRO_COLOR[m] ?? '#8A8178';
+  }
+
+  function applyExperiencePreset(preset: typeof EXPERIENCE_PRESETS[number]) {
+    app.minutes = preset.minutes;
+    app.cats = [...preset.cats];
+    showToast(`Preset ${preset.label} selezionato`);
   }
 
   // Perché questa tappa è stata selezionata
@@ -948,7 +961,7 @@
 
       <!-- Header pannello -->
       <div class="edit-head">
-        <span class="edit-title">Modifica itinerario</span>
+        <span class="edit-title">{app.stops.length ? 'Modifica itinerario' : 'Crea il tuo giro'}</span>
         <button class="edit-close" aria-label="chiudi"
                 onclick={() => showScreen('route')} disabled={!app.stops.length}>
           <i class="ti ti-x"></i>
@@ -982,6 +995,21 @@
              value={app.minutes}
              oninput={e => app.minutes = +(e.target as HTMLInputElement).value} />
       <div class="slider-endpoints"><span>30 min</span><span>12 ore</span></div>
+
+      <div class="section">
+        <div class="preset-head">
+          <div class="label-sm">Che giro vuoi fare?</div>
+          <span class="preset-sub">scegli una base, poi personalizza</span>
+        </div>
+        <div class="preset-row">
+          {#each EXPERIENCE_PRESETS as p}
+          <button class="preset-btn" onclick={() => applyExperiencePreset(p)}>
+            <i class="ti {p.icon}"></i>
+            <span>{p.label}</span>
+          </button>
+          {/each}
+        </div>
+      </div>
 
       <!-- Mezzo di trasporto -->
       <div class="section">
