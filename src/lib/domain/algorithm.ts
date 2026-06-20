@@ -105,6 +105,42 @@ export function generate(p: GenerateParams): Stop[] {
 
   const pool = allPois.filter(x => matches(x, cats));
 
+  // ── Bilanciamento per categoria ──────────────────────────────
+  // Evita "10 pizzerie e 8 bancomat": tetti per tipo + penalità di
+  // diversità. I servizi (atm, bagni…) sono utilità di passaggio,
+  // il cibo/movida si distribuiscono nel tempo, cultura/luoghi sono
+  // l'ossatura. Tra tanti dello stesso tipo si scelgono i più sensati
+  // (punteggio più alto = wiki/sito, e minor deviazione dal percorso).
+  const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
+
+  const CLASS_BY_MACRO: Record<string, string> = {
+    cibo: 'food', notturna: 'night', servizi: 'service', luoghi: 'place',
+  };
+  const classOf = (x: POI): string =>
+    isGem(x) ? 'culture' : (CLASS_BY_MACRO[x.macro] ?? 'culture');
+  // sotto-categoria "scelta dall'utente" usata per i conteggi
+  const primarySub = (x: POI): string =>
+    (x.sub ?? []).find(s => cats.includes(s)) ?? x.sub?.[0] ?? x.macro;
+
+  // tetti scalati sul tempo a disposizione
+  const foodCap    = clamp(Math.round(minutes / 150), 1, 3);   // ~1 pasto ogni 2h30
+  const nightCap   = clamp(Math.round(minutes / 180), 1, 3);
+  const cultureCap = clamp(Math.round(minutes / 120), 3, 8);   // per singola sotto-categoria
+  const SERVICE_TOTAL = 2;                                      // bagni/atm/acqua: max 2 in tutto
+
+  const countClass: Record<string, number> = {};
+  const countSub:   Record<string, number> = {};
+
+  // un candidato è ammesso solo se non sfora il tetto del suo tipo
+  const withinCap = (x: POI): boolean => {
+    const cls = classOf(x), sub = primarySub(x);
+    const nClass = countClass[cls] ?? 0, nSub = countSub[sub] ?? 0;
+    if (cls === 'service') return nClass < SERVICE_TOTAL && nSub < 1;
+    if (cls === 'food')    return nClass < foodCap  && nSub < 2;
+    if (cls === 'night')   return nClass < nightCap && nSub < 2;
+    return nSub < cultureCap;   // cultura/luoghi
+  };
+
   const MAX = 14;
   let remaining = [...pool], chosen: POI[] = [], cur: LatLng = start;
   let used = 0;
@@ -114,12 +150,18 @@ export function generate(p: GenerateParams): Stop[] {
     const baseLeg = end ? leg(cur, end) : 0;
 
     for (const c of remaining) {
+      if (!withinCap(c)) continue;
       const legIn  = leg(cur, c);
       const legOut = end ? leg(c, end) : 0;
       if (used + legIn + effVisit(c) + legOut <= minutes) {
-        // preferisci la tappa più vicina, con bonus per i luoghi più rilevanti
-        const relevance = (c.score ?? 0) / 20 + (isGem(c) ? 1 : 0);
-        const cost = (legIn + legOut - baseLeg) - relevance;
+        const cls = classOf(c), sub = primarySub(c);
+        // rilevanza: punteggio (wiki/sito), bonus gemme, bonus all'ossatura
+        const relevance = (c.score ?? 0) / 20 + (isGem(c) ? 1 : 0)
+          + (cls === 'culture' || cls === 'place' ? 0.5 : 0);
+        // penalità di diversità: ogni doppione dello stesso tipo "costa" di più;
+        // i servizi pagano un extra (vanno presi solo se proprio sulla strada)
+        const dupPenalty = (countSub[sub] ?? 0) * 6 + (cls === 'service' ? 5 : 0);
+        const cost = (legIn + legOut - baseLeg) - relevance + dupPenalty;
         if (cost < bestCost) { best = c; bestCost = cost; }
       }
     }
@@ -127,6 +169,8 @@ export function generate(p: GenerateParams): Stop[] {
     if (!best) break;
     used += leg(cur, best) + effVisit(best);
     chosen.push(best);
+    countClass[classOf(best)] = (countClass[classOf(best)] ?? 0) + 1;
+    countSub[primarySub(best)] = (countSub[primarySub(best)] ?? 0) + 1;
     cur = { lat: best.lat, lng: best.lng };
     remaining.splice(remaining.indexOf(best), 1);
   }
