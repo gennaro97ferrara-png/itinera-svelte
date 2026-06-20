@@ -87,6 +87,10 @@ class AppStore {
     this.stops = next;
   }
 
+  replaceStops(stops: Stop[]) {
+    this.stops = stops;
+  }
+
   get intermediateCount() {
     return this.stops.filter(s => s.kind === 'stop').length;
   }

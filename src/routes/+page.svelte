@@ -1,14 +1,19 @@
 <script lang="ts">
   import { browser } from '$app/environment';
+  import { base } from '$app/paths';
   import { onMount }  from 'svelte';
   import { fly }        from 'svelte/transition';
 
   import Map        from '$lib/components/Map.svelte';
+  import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+  import LoadingOverlay from '$lib/components/LoadingOverlay.svelte';
+  import NameDialog from '$lib/components/NameDialog.svelte';
   import { app, showToast } from '$lib/stores/app.svelte';
   import { trips }          from '$lib/stores/trips.svelte';
-  import { MACROS, SUBS }   from '$lib/domain/categories';
+  import { MACROS }   from '$lib/domain/categories';
   import { POIS }           from '$lib/data/pois';
-  import { generate, fmt, countedVisit, effVisit, catLabel, isGem, haversine, travelMin, SPEED_MPM, bearing, ROME } from '$lib/domain/algorithm';
+  import { generate, fmt, countedVisit, effVisit, catLabel, isGem, haversine, SPEED_MPM, bearing, ROME } from '$lib/domain/algorithm';
+  import { recalcStopLegs, routeDistanceKm, routeTravelMin } from '$lib/domain/routing';
   import { fetchSummary }   from '$lib/services/wikipedia';
   import { fetchPois, fetchPoisInArea } from '$lib/services/overpass';
   import { openStateAt, openLabel } from '$lib/services/openingHours';
@@ -177,6 +182,10 @@
     prefetchPhotos();   // carica le foto (Wikipedia) e le mostra appena pronte
   }
 
+  function setRouteStops(stops: Stop[]) {
+    app.replaceStops(recalcStopLegs(stops, app.mode));
+  }
+
   // Precarica le immagini delle tappe (Wikipedia / Wikidata / image OSM).
   function prefetchPhotos() {
     app.stops.forEach((s, i) => {
@@ -251,7 +260,7 @@
   // ── Rimuovi/riordina tappe ─────────────────────────────────
   function removeStop(i: number) {
     if (app.intermediateCount <= 1) { showToast('Serve almeno una tappa'); return; }
-    app.removeStop(i);
+    setRouteStops(app.stops.filter((_, idx) => idx !== i));
     app.focusIdx = -1;
     showToast('Tappa rimossa');
   }
@@ -260,13 +269,13 @@
   let totalWalk = $derived(
     app.stops.reduce((acc, s, i) => {
       const prev = app.stops[i - 1];
-      const leg = s.walkMin ?? (prev ? Math.round(travelMin(haversine(prev, s), app.mode)) : 0);
+      const leg = s.walkMin ?? (prev ? Math.round(routeTravelMin(prev, s, app.mode)) : 0);
       return acc + leg;
     }, 0)
   );
   let totalVisit = $derived(app.stops.reduce((acc, s) => acc + countedVisit(s), 0));
   // distanza = minuti di spostamento × velocità del mezzo scelto
-  let totalKm = $derived((totalWalk * SPEED_MPM[app.mode] / 1000).toFixed(1).replace('.', ','));
+  let totalKm = $derived(routeDistanceKm(app.stops, app.mode).toFixed(1).replace('.', ','));
 
   // ── Insight intelligenti (route screen) ───────────────────
   let openNowCount = $derived(
@@ -317,37 +326,34 @@
   }
 
   // Sistema visivo categorie: gradiente brandizzato + icona (quando manca la foto reale)
-  const MACRO_GRAD: Record<string, string> = {
-    cultura:  'linear-gradient(135deg,#5B7CFA,#3B4FD9)',
-    cibo:     'linear-gradient(135deg,#FFA46C,#F25C54)',
-    luoghi:   'linear-gradient(135deg,#54D6A0,#2EA968)',
-    notturna: 'linear-gradient(135deg,#A78BFA,#6C4BD6)',
-    servizi:  'linear-gradient(135deg,#5BC8C6,#3A9D9A)',
-    scoperte: 'linear-gradient(135deg,#C77DFF,#9B59B6)',
+  const FALLBACK_IMG: Record<string, string> = {
+    cultura:  'culture.webp',
+    cibo:     'food.webp',
+    luoghi:   'places.webp',
+    notturna: 'nightlife.webp',
+    servizi:  'services.webp',
+    scoperte: 'discoveries.webp',
   };
-  function catIcon(poi: import('$lib/domain/types').POI | null): string {
-    if (!poi) return 'ti-map-pin';
-    if (poi.gem) return 'ti-compass';
-    for (const s of poi.sub ?? []) if (SUBS[s]) return SUBS[s].icon;
-    return MACROS.find(m => m.id === poi.macro)?.icon ?? 'ti-map-pin';
-  }
-  function catGrad(poi: import('$lib/domain/types').POI | null): string {
+  function fallbackImg(poi: import('$lib/domain/types').POI | null): string {
     const m = poi?.gem ? 'scoperte' : (poi?.macro ?? 'cultura');
-    return MACRO_GRAD[m] ?? MACRO_GRAD.cultura;
+    return `${base}/fallbacks/${FALLBACK_IMG[m] ?? FALLBACK_IMG.cultura}`;
+  }
+  function hasRealImg(poi: import('$lib/domain/types').POI | null): boolean {
+    return !!(poi?._sum?.img ?? poi?.image);
   }
   // foto disponibile: riassunto Wikipedia/Wikidata già risolto, o URL diretto OSM
   function poiImg(poi: import('$lib/domain/types').POI | null): string | null {
-    return poi?._sum?.img ?? poi?.image ?? null;
+    return poi?._sum?.img ?? poi?.image ?? fallbackImg(poi);
   }
 
   // Un colore (leggermente diverso) per ogni categoria
   const MACRO_COLOR: Record<string, string> = {
-    cultura:  '#4F6D9E',   // blu
-    cibo:     '#C26A3C',   // terracotta
-    luoghi:   '#5E8C57',   // verde
-    notturna: '#6C5CE0',   // indaco
-    servizi:  '#5C8A86',   // verde-acqua
-    scoperte: '#8A6699',   // prugna
+    cultura:  '#4F7380',
+    cibo:     '#B7603B',
+    luoghi:   '#4F7F61',
+    notturna: '#385A78',
+    servizi:  '#4B817A',
+    scoperte: '#A45F3F',
   };
 
   // ── Mezzi di trasporto ─────────────────────────────────────
@@ -542,7 +548,9 @@
     (e.currentTarget as HTMLElement).classList.remove('drag-over');
     if (dragIdx === null || dragIdx === i) { dragIdx = null; return; }
     if (app.stops[i]?.kind === 'stop' && app.stops[dragIdx]?.kind === 'stop') {
-      app.moveStop(dragIdx, (i - dragIdx) as -1 | 1);
+      const next = [...app.stops];
+      [next[dragIdx], next[i]] = [next[i], next[dragIdx]];
+      setRouteStops(next);
     }
     dragIdx = null;
   }
@@ -651,7 +659,7 @@
       gem: isGem(poi),
       lat: poi.lat, lng: poi.lng,
     };
-    app.stops = next;
+    setRouteStops(next);
     replacingIdx = null;
     app.focusIdx = -1;
     prefetchPhotos();
@@ -669,6 +677,36 @@
   let dayLabel    = $state('');
 
   let currentTrip = $derived(trips.get(app.currentTripId));
+  let nameDialog = $state<{
+    open: boolean;
+    title: string;
+    label: string;
+    value: string;
+    placeholder: string;
+    confirmText: string;
+    onConfirm: (value: string) => void;
+  }>({
+    open: false,
+    title: '',
+    label: '',
+    value: '',
+    placeholder: '',
+    confirmText: 'Salva',
+    onConfirm: () => {}
+  });
+  let confirmDialog = $state<{
+    open: boolean;
+    title: string;
+    message: string;
+    confirmText: string;
+    onConfirm: () => void;
+  }>({
+    open: false,
+    title: '',
+    message: '',
+    confirmText: 'Conferma',
+    onConfirm: () => {}
+  });
 
   function openSaveSheet() {
     if (!app.stops.length) { showToast('Genera prima un itinerario'); return; }
@@ -702,9 +740,9 @@
   function openTrip(id: string) { app.currentTripId = id; showScreen('trip'); }
 
   function loadDay(d: TripDay) {
-    app.stops    = JSON.parse(JSON.stringify(d.stops));
     app.minutes  = d.minutes;
     app.mode     = d.mode;
+    setRouteStops(JSON.parse(JSON.stringify(d.stops)));
     app.cats     = [...d.cats];
     app.loop     = !d.stops.some(s => s.kind === 'end');
     app.focusIdx = -1;
@@ -712,22 +750,61 @@
     prefetchPhotos();
   }
 
+  function closeNameDialog() { nameDialog.open = false; }
+  function closeConfirmDialog() { confirmDialog.open = false; }
+
   function newTripPrompt() {
-    const name = prompt('Nome del viaggio (es. Vacanza Roma)');
-    if (name && name.trim()) trips.createTrip(name.trim());
+    nameDialog = {
+      open: true,
+      title: 'Nuovo viaggio',
+      label: 'Nome viaggio',
+      value: '',
+      placeholder: 'Es. Vacanza Roma',
+      confirmText: 'Crea',
+      onConfirm: name => {
+        trips.createTrip(name);
+        closeNameDialog();
+      }
+    };
   }
   function renameTripPrompt(id: string, current: string) {
-    const name = prompt('Rinomina viaggio', current);
-    if (name != null && name.trim()) trips.renameTrip(id, name.trim());
+    nameDialog = {
+      open: true,
+      title: 'Rinomina viaggio',
+      label: 'Nome viaggio',
+      value: current,
+      placeholder: 'Nome viaggio',
+      confirmText: 'Salva',
+      onConfirm: name => {
+        trips.renameTrip(id, name);
+        closeNameDialog();
+      }
+    };
   }
   function deleteTripConfirm(id: string, name: string) {
-    if (confirm(`Eliminare "${name}" e tutti i suoi giorni?`)) {
-      trips.deleteTrip(id);
-      if (app.currentTripId === id) showScreen('trips');
-    }
+    confirmDialog = {
+      open: true,
+      title: 'Elimina viaggio',
+      message: `Eliminare "${name}" e tutti i suoi giorni?`,
+      confirmText: 'Elimina',
+      onConfirm: () => {
+        trips.deleteTrip(id);
+        if (app.currentTripId === id) showScreen('trips');
+        closeConfirmDialog();
+      }
+    };
   }
   function deleteDayConfirm(tripId: string, d: TripDay) {
-    if (confirm(`Eliminare "${d.label}"?`)) trips.removeDay(tripId, d.id);
+    confirmDialog = {
+      open: true,
+      title: 'Elimina giorno',
+      message: `Eliminare "${d.label}"?`,
+      confirmText: 'Elimina',
+      onConfirm: () => {
+        trips.removeDay(tripId, d.id);
+        closeConfirmDialog();
+      }
+    };
   }
 
   // ── Mount ─────────────────────────────────────────────────
@@ -998,14 +1075,10 @@
 
             <div class="tl-card">
               {#if isStop}
-              {@const img = s.poi?._sum?.img ?? s.poi?.image}
-              {#if img}
-              <div class="tl-photo" style="background-image:url({img})"></div>
-              {:else}
-              <div class="tl-photo tl-photo--cat" style="background:{catGrad(s.poi)}">
-                <i class="ti {catIcon(s.poi)}"></i>
-              </div>
-              {/if}
+              <div
+                class="tl-photo {hasRealImg(s.poi) ? '' : 'tl-photo--fallback'}"
+                style="background-image:url({poiImg(s.poi)})"
+              ></div>
               {/if}
               <div class="tl-text">
                 <div class="tl-name">
@@ -1108,13 +1181,10 @@
 
       <!-- Target card -->
       <div class="nav-target {navTarget.gem ? 'gem' : ''}">
-        {#if poiImg(navTarget.poi)}
-        <div class="nav-target-thumb" style="background-image:url({poiImg(navTarget.poi)}); background-size:cover"></div>
-        {:else}
-        <div class="nav-target-thumb" style="background:{catGrad(navTarget.poi)}">
-          <i class="ti {catIcon(navTarget.poi)}"></i>
-        </div>
-        {/if}
+        <div
+          class="nav-target-thumb {hasRealImg(navTarget.poi) ? '' : 'nav-target-thumb--fallback'}"
+          style="background-image:url({poiImg(navTarget.poi)}); background-size:cover"
+        ></div>
         <div class="nav-target-body">
           <div class="nav-target-name">{navTarget.name}</div>
           {#if navTarget.poi?.story}
@@ -1156,11 +1226,8 @@
     <section class="screen" in:fly={{ y: 10, duration: 220 }}>
 
       <!-- Hero -->
-      <div class="hero {poiImg(poi) ? '' : 'hero-cat'}"
-           style={poiImg(poi) ? `background-image:url(${poiImg(poi)})` : `background:${catGrad(poi)}`}>
-        {#if !poiImg(poi)}
-        <i class="ti {catIcon(poi)} hero-cat-icon"></i>
-        {/if}
+      <div class="hero {hasRealImg(poi) ? '' : 'hero-fallback'}"
+           style="background-image:url({poiImg(poi)})">
         <button class="hero-back" aria-label="torna alle tappe"
                 onclick={() => showScreen('route')}>
           <i class="ti ti-chevron-left"></i>
@@ -1354,34 +1421,7 @@
 
   <!-- ── Loading overlay ───────────────────────────────────── -->
   {#if loading}
-  <div class="loading-overlay">
-
-    <!-- Feature card rotante -->
-    {#key loadFeatureIdx}
-    {@const f = LOAD_FEATURES[loadFeatureIdx]}
-    <div class="load-feature" in:fly={{ y: 16, duration: 320 }}>
-      <div class="load-feature-icon" style="background:{f.color}1A; color:{f.color}">
-        <i class="ti {f.icon}"></i>
-      </div>
-      <h2 class="load-feature-title">{f.title}</h2>
-      <p class="load-feature-text">{f.text}</p>
-    </div>
-    {/key}
-
-    <!-- Dots indicatori -->
-    <div class="load-dots">
-      {#each LOAD_FEATURES as _, i}
-      <span class="load-dot {i === loadFeatureIdx ? 'on' : ''}"></span>
-      {/each}
-    </div>
-
-    <!-- Spinner + step corrente -->
-    <div class="load-spinner-row">
-      <span class="load-ring"></span>
-      <span class="load-step">{loadStep}</span>
-    </div>
-
-  </div>
+  <LoadingOverlay features={LOAD_FEATURES} activeIndex={loadFeatureIdx} step={loadStep} />
   {/if}
 
   <!-- ── Salva nel viaggio (modale) ────────────────────────── -->
@@ -1506,6 +1546,27 @@
   {/if}
 
   <!-- ── Toast ─────────────────────────────────────────────── -->
+  <NameDialog
+    open={nameDialog.open}
+    title={nameDialog.title}
+    label={nameDialog.label}
+    value={nameDialog.value}
+    placeholder={nameDialog.placeholder}
+    confirmText={nameDialog.confirmText}
+    onCancel={closeNameDialog}
+    onConfirm={nameDialog.onConfirm}
+  />
+
+  <ConfirmDialog
+    open={confirmDialog.open}
+    title={confirmDialog.title}
+    message={confirmDialog.message}
+    confirmText={confirmDialog.confirmText}
+    tone="danger"
+    onCancel={closeConfirmDialog}
+    onConfirm={confirmDialog.onConfirm}
+  />
+
   <div class="toast {app.toastVisible ? 'show' : ''}" role="status" aria-live="polite">
     {app.toastMsg}
   </div>

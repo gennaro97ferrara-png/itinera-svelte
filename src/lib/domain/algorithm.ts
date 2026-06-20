@@ -27,9 +27,26 @@ export const SPEED_MPM: Record<TravelMode, number> = {
   walk: 80, bike: 250, car: 500, transit: 300,
 };
 
+const ROUTE_FACTOR: Record<TravelMode, number> = {
+  walk: 1.22,
+  bike: 1.3,
+  car: 1.45,
+  transit: 1.6,
+};
+
 /** Minuti di spostamento per `meters` con il mezzo scelto (default: a piedi). */
 export function travelMin(meters: number, mode: TravelMode = 'walk'): number {
   return meters / SPEED_MPM[mode];
+}
+
+/** Distanza stimata lungo strada, non in linea d'aria. */
+export function routeMeters(a: LatLng, b: LatLng, mode: TravelMode = 'walk'): number {
+  return haversine(a, b) * ROUTE_FACTOR[mode];
+}
+
+/** Tempo stimato lungo strada con il mezzo scelto. */
+export function routeTravelMin(a: LatLng, b: LatLng, mode: TravelMode = 'walk'): number {
+  return travelMin(routeMeters(a, b, mode), mode);
 }
 
 /** Alias storico: minuti a piedi. */
@@ -94,7 +111,7 @@ export function generate(p: GenerateParams): Stop[] {
   const { minutes, cats, roundTrip, startPoint, endPoint, user, allPois, mode = 'walk' } = p;
 
   // minuti di spostamento tra due punti col mezzo scelto
-  const leg = (a: LatLng, b: LatLng) => travelMin(haversine(a, b), mode);
+  const leg = (a: LatLng, b: LatLng) => routeTravelMin(a, b, mode);
 
   const hasDest = !!endPoint;
   const loop    = hasDest ? false : roundTrip;
