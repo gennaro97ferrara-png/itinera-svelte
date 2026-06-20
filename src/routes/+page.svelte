@@ -28,6 +28,7 @@
   let locLabel  = $state('individuo la tua posizione…');
   let showFar   = $state(false);
   let loading   = $state(true);
+  let usedLocalData = $state(false);
   let now       = $state(new Date());
   let booted    = false;
   let watchId: number | null = null;
@@ -121,19 +122,28 @@
     const radius = searchRadius();
 
     let allPois = POIS;
+    usedLocalData = false;
     loading = true;
     loadStep = 'Cerco luoghi intorno a te…';
 
+    loadStep = 'Cerco luoghi intorno a te...';
+
     try {
+      loadStep = 'Raccolgo punti di interesse e orari...';
       loadStep = 'Scarico i punti di interesse…';
+      loadStep = 'Raccolgo punti di interesse e orari...';
       const livePois = await fetchPois(center.lat, center.lng, radius, app.cats);
       if (livePois.length > 0) {
         allPois = livePois;
         loadStep = `Trovati ${livePois.length} luoghi · calcolo il percorso…`;
+        loadStep = `Trovati ${livePois.length} luoghi. Calcolo il percorso...`;
       } else {
+        usedLocalData = true;
         showToast('Nessun luogo trovato in zona · uso i dati demo');
       }
     } catch {
+      usedLocalData = true;
+      usedLocalData = true;
       showToast('Dati live non disponibili · uso i dati demo');
     } finally {
       loading = false;
@@ -148,10 +158,13 @@
     const center = { lat: (bounds.south + bounds.north) / 2, lng: (bounds.west + bounds.east) / 2 };
     app.startPoint = { ...center, name: 'Centro area' };
     app.endPoint   = null;
+    usedLocalData = false;
     loading = true;
+    loadStep = 'Cerco luoghi nell area selezionata...';
     let allPois = POIS;
     try {
       const livePois = await fetchPoisInArea(bounds, app.cats);
+      if (livePois.length === 0) usedLocalData = true;
       if (livePois.length > 0) allPois = livePois;
       else showToast('Nessun luogo nell’area · uso i dati demo');
     } catch {
@@ -265,6 +278,62 @@
     showToast('Tappa rimossa');
   }
 
+  function toggleStopMode(i: number) {
+    app.toggleMode(i);
+    setRouteStops(app.stops);
+    showToast(app.stops[i]?.mode === 'pass' ? 'Tappa trasformata in passaggio' : 'Tappa inclusa come visita');
+  }
+
+  function useStopAsStart(s: Stop) {
+    setStartFromStop(s);
+    app.focusIdx = -1;
+    showToast('Partenza aggiornata');
+    onGenerate();
+  }
+
+  function useStopAsEnd(s: Stop) {
+    setEndFromStop(s);
+    app.focusIdx = -1;
+    showToast('Arrivo aggiornato');
+    onGenerate();
+  }
+
+  function ensureCats(ids: string[]) {
+    ids.forEach(id => app.addCat(id));
+  }
+
+  function tuneLessWalking() {
+    app.minutes = Math.max(60, app.minutes - 30);
+    showToast('Giro accorciato: rigenero con meno spostamenti');
+    onGenerate();
+  }
+
+  function tuneFoodBreak() {
+    ensureCats(['ristoranti', 'caffe', 'gelati']);
+    showToast('Aggiungo una pausa cibo al giro');
+    onGenerate();
+  }
+
+  function tuneHiddenGems() {
+    app.addCat('scoperte');
+    showToast('Cerco piu luoghi nascosti');
+    onGenerate();
+  }
+
+  function removeClosedStops() {
+    const next = app.stops.filter(s =>
+      !(s.kind === 'stop' && s.poi?.openingHours && openStateAt(s.poi.openingHours, now) === 'closed')
+    );
+    if (next.length === app.stops.length) { showToast('Nessuna tappa chiusa nel giro'); return; }
+    if (next.filter(s => s.kind === 'stop').length === 0) {
+      showToast('Tutte le tappe risultano chiuse: meglio sostituirle una alla volta');
+      return;
+    }
+    setRouteStops(next);
+    app.focusIdx = -1;
+    showToast('Tappe chiuse rimosse');
+  }
+
   // ── Calcoli rotta ──────────────────────────────────────────
   let totalWalk = $derived(
     app.stops.reduce((acc, s, i) => {
@@ -283,7 +352,7 @@
       && openStateAt(s.poi.openingHours, now) === 'open').length
   );
   let gemCount = $derived(app.stops.filter(s => s.kind === 'stop' && s.gem).length);
-  let photoCount = $derived(app.stops.filter(s => s.kind === 'stop' && s.poi?._sum?.img).length);
+  let photoCount = $derived(app.stops.filter(s => s.kind === 'stop' && hasRealImg(s.poi)).length);
 
   function fmtHours(min: number): string {
     if (min < 60) return `${min} min`;
@@ -387,6 +456,24 @@
   }
 
   // tappa col punteggio più alto → "consigliata" (stellina nella timeline)
+  function shortReason(s: Stop, oh: string): string {
+    const poi = s.poi;
+    if (!poi) return '';
+    if (oh === 'open') return 'Aperto ora e compatibile con il tuo tempo.';
+    if (oh === 'closed') return 'Chiuso ora: puoi tenerlo come passaggio o sostituirlo.';
+    const subs = poi.sub ?? [];
+    if (poi.gem) return 'Scelto per aggiungere una scoperta meno turistica.';
+    if (subs.some(x => ['ristoranti','pizza','panini','gelati','street','caffe'].includes(x))) {
+      return 'Pausa cibo comoda lungo il giro.';
+    }
+    if (subs.includes('panorami')) return 'Vista panoramica lungo il percorso.';
+    if (subs.includes('musei') || subs.includes('monumenti') || subs.includes('storico')) {
+      return 'Tappa culturale rilevante e raggiungibile.';
+    }
+    if ((s.walkMin ?? 0) <= 8) return 'Scelto perche vicino alla tappa precedente.';
+    return 'Scelto per bilanciare interesse e distanza.';
+  }
+
   let heroIdx = $derived(
     app.stops
       .map((s, i) => ({ i, score: (s.poi?.score ?? 0) + (s.gem ? 20 : 0), isStop: s.kind === 'stop' }))
@@ -1003,6 +1090,9 @@
       {#if app.stops.length}
       <div class="insights">
         <div class="insight insight--accent"><i class="ti ti-bolt-filled"></i> Percorso ottimizzato</div>
+        {#if usedLocalData}
+        <div class="insight"><i class="ti ti-database"></i> Proposta con dati locali</div>
+        {/if}
         {#if openNowCount}
         <div class="insight insight--open"><span class="insight-dot"></span> {openNowCount} aperti ora</div>
         {/if}
@@ -1010,6 +1100,15 @@
         <div class="insight insight--gem"><i class="ti ti-sparkles"></i> {gemCount} {gemCount === 1 ? 'gemma' : 'gemme'}</div>
         {/if}
         <div class="insight"><i class="ti ti-photo"></i> {photoCount} con foto</div>
+      </div>
+      {/if}
+
+      {#if app.stops.length}
+      <div class="route-tunes" aria-label="correzioni rapide itinerario">
+        <button class="route-tune" onclick={tuneLessWalking}><i class="ti ti-walk"></i> Meno camminata</button>
+        <button class="route-tune" onclick={tuneFoodBreak}><i class="ti ti-tools-kitchen-2"></i> Pausa cibo</button>
+        <button class="route-tune" onclick={tuneHiddenGems}><i class="ti ti-compass"></i> Piu scoperte</button>
+        <button class="route-tune" onclick={removeClosedStops}><i class="ti ti-door-exit"></i> Evita chiusi</button>
       </div>
       {/if}
 
@@ -1033,6 +1132,7 @@
         {@const last = i === app.stops.length - 1}
         {@const stopNo = app.stops.slice(0, i + 1).filter(x => x.kind === 'stop').length}
         {@const oh = s.poi?.openingHours ? openStateAt(s.poi.openingHours, now) : 'unknown'}
+        {@const reason = isStop ? shortReason(s, oh) : ''}
 
         <div class="tl-row {s.kind} {i === app.focusIdx ? 'on' : ''}"
             data-i={i}
@@ -1096,6 +1196,9 @@
                     arrivo{app.loop ? ' · ritorno al via' : ''}
                   {/if}
                 </div>
+                {#if reason}
+                <div class="tl-reason">{reason}</div>
+                {/if}
               </div>
               {#if isStop}
               <button class="tl-del" aria-label="rimuovi tappa"
@@ -1113,11 +1216,29 @@
               {#if s.poi?.address}
               <span class="tl-addr"><i class="ti ti-map-pin"></i> {s.poi.address}</span>
               {/if}
+              {#if s.poi}
+              <button class="tl-action-btn" onclick={e => { e.stopPropagation(); s.poi && openDetail(s.poi); }}>
+                <i class="ti ti-info-circle"></i> Dettagli
+              </button>
+              {/if}
               {#if lastAllPois.length > app.stops.length}
               <button class="tl-action-btn" onclick={e => { e.stopPropagation(); openReplaceStop(i); }}>
                 <i class="ti ti-refresh"></i> Sostituisci
               </button>
               {/if}
+              <button class="tl-action-btn" onclick={e => { e.stopPropagation(); toggleStopMode(i); }}>
+                <i class="ti {s.mode === 'pass' ? 'ti-eye' : 'ti-route'}"></i>
+                {s.mode === 'pass' ? 'Visita' : 'Passaggio'}
+              </button>
+              <button class="tl-action-btn" onclick={e => { e.stopPropagation(); useStopAsStart(s); }}>
+                <i class="ti ti-player-play"></i> Partenza
+              </button>
+              <button class="tl-action-btn" onclick={e => { e.stopPropagation(); useStopAsEnd(s); }}>
+                <i class="ti ti-flag"></i> Arrivo
+              </button>
+              <button class="tl-action-btn danger" onclick={e => { e.stopPropagation(); removeStop(i); }}>
+                <i class="ti ti-x"></i> Salta
+              </button>
             </div>
             {/if}
           </div>
