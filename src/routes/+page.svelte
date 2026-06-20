@@ -631,11 +631,17 @@
     </div>
   </div>
 
-  <!-- Recenter FAB -->
-  <button class="fab" aria-label="centra sulla mia posizione"
-          onclick={() => mapComp?.recenter()}>
-    <i class="ti ti-current-location"></i>
-  </button>
+  <!-- FAB stack (top-right) -->
+  <div class="fab-stack">
+    <button class="fab" aria-label="centra sulla mia posizione"
+            onclick={() => mapComp?.recenter()}>
+      <i class="ti ti-current-location"></i>
+    </button>
+    <button class="fab fab--area" aria-label="disegna area sulla mappa"
+            onclick={drawAreaFlow}>
+      <i class="ti ti-vector"></i>
+    </button>
+  </div>
 
   <!-- ── SHEET ───────────────────────────────────────────────── -->
   <main class="sheet">
@@ -737,49 +743,8 @@
       </button>
       {/each}
 
-      <!-- Partenza / destinazione (sempre visibili) -->
-      <div class="section od-block">
-        <div class="label-sm">Partenza e destinazione</div>
-
-        <!-- Da -->
-        <div class="od-field">
-          <i class="ti ti-circle-dot start-dot"></i>
-          <div class="od-info">
-            <span class="od-cap">Da</span>
-            <span class="od-val">{app.startPoint ? app.startPoint.name : 'La mia posizione'}</span>
-          </div>
-          <div class="od-actions">
-            {#if app.startPoint}
-            <button class="od-mini" onclick={useMyLocationAsStart} aria-label="usa la mia posizione">
-              <i class="ti ti-current-location"></i>
-            </button>
-            {/if}
-            <button class="od-mini" onclick={pickStart} aria-label="scegli sulla mappa">
-              <i class="ti ti-map-pin-pin"></i>
-            </button>
-          </div>
-        </div>
-
-        <!-- A -->
-        <div class="od-field">
-          <i class="ti ti-flag end-dot"></i>
-          <div class="od-info">
-            <span class="od-cap">A</span>
-            <span class="od-val">{app.endPoint ? app.endPoint.name : 'Nessuna destinazione'}</span>
-          </div>
-          <div class="od-actions">
-            {#if app.endPoint}
-            <button class="od-mini" onclick={clearDest} aria-label="rimuovi destinazione">
-              <i class="ti ti-x"></i>
-            </button>
-            {/if}
-            <button class="od-mini" onclick={pickEnd} aria-label="scegli sulla mappa">
-              <i class="ti ti-map-pin-pin"></i>
-            </button>
-          </div>
-        </div>
-
-        <!-- Ritorna al punto di partenza -->
+      <!-- Ritorna al punto di partenza -->
+      <div class="section">
         <button class="switch-row"
                 role="switch"
                 aria-checked={String(app.roundTrip) as 'true'|'false'}
@@ -790,12 +755,6 @@
                 }}>
           <span class="sw-label"><i class="ti ti-arrow-back-up"></i> Ritorna al punto di partenza</span>
           <span class="switch"><span class="knob"></span></span>
-        </button>
-
-        <!-- Disegna un'area sulla mappa -->
-        <button class="ghost-row" onclick={drawAreaFlow}>
-          <span><i class="ti ti-vector"></i> Disegna un'area sulla mappa</span>
-          <i class="ti ti-chevron-right chev-sm"></i>
         </button>
       </div>
 
@@ -831,6 +790,49 @@
         </button>
         {/if}
       </header>
+
+      <!-- Barra Da → A (sempre visibile, tap per modificare) -->
+      <div class="od-bar">
+        <div class="od-bar-row">
+          <div class="od-bar-point" role="button" tabindex="0"
+               onclick={pickStart} onkeydown={e => e.key === 'Enter' && pickStart()}
+               aria-label="modifica partenza">
+            <span class="od-bar-dot od-bar-dot--start"></span>
+            <div class="od-bar-text">
+              <span class="od-bar-label">Da</span>
+              <span class="od-bar-val">{app.startPoint?.name ?? 'La mia posizione'}</span>
+            </div>
+          </div>
+          {#if app.startPoint}
+          <button class="od-bar-clear" aria-label="usa posizione" onclick={useMyLocationAsStart}>
+            <i class="ti ti-x"></i>
+          </button>
+          {/if}
+        </div>
+
+        <div class="od-bar-sep">
+          <span class="od-bar-line"></span>
+          <i class="ti ti-arrow-down od-bar-arrow"></i>
+          <span class="od-bar-line"></span>
+        </div>
+
+        <div class="od-bar-row">
+          <div class="od-bar-point" role="button" tabindex="0"
+               onclick={pickEnd} onkeydown={e => e.key === 'Enter' && pickEnd()}
+               aria-label="modifica destinazione">
+            <span class="od-bar-dot od-bar-dot--end"></span>
+            <div class="od-bar-text">
+              <span class="od-bar-label">A</span>
+              <span class="od-bar-val">{app.endPoint?.name ?? 'Tocca per aggiungere destinazione'}</span>
+            </div>
+          </div>
+          {#if app.endPoint}
+          <button class="od-bar-clear" aria-label="rimuovi destinazione" onclick={clearDest}>
+            <i class="ti ti-x"></i>
+          </button>
+          {/if}
+        </div>
+      </div>
 
       {#if !app.stops.length}
       <!-- Empty state -->
