@@ -6,7 +6,7 @@
   import Map        from '$lib/components/Map.svelte';
   import { app, showToast } from '$lib/stores/app.svelte';
   import { trips }          from '$lib/stores/trips.svelte';
-  import { MACROS }         from '$lib/domain/categories';
+  import { MACROS, SUBS }   from '$lib/domain/categories';
   import { POIS }           from '$lib/data/pois';
   import { generate, fmt, countedVisit, effVisit, catLabel, isGem, haversine, travelMin, SPEED_MPM, bearing, ROME } from '$lib/domain/algorithm';
   import { fetchSummary }   from '$lib/services/wikipedia';
@@ -266,6 +266,14 @@
   // distanza = minuti di spostamento × velocità del mezzo scelto
   let totalKm = $derived((totalWalk * SPEED_MPM[app.mode] / 1000).toFixed(1).replace('.', ','));
 
+  // ── Insight intelligenti (route screen) ───────────────────
+  let openNowCount = $derived(
+    app.stops.filter(s => s.kind === 'stop' && s.poi?.openingHours
+      && openStateAt(s.poi.openingHours, now) === 'open').length
+  );
+  let gemCount = $derived(app.stops.filter(s => s.kind === 'stop' && s.gem).length);
+  let photoCount = $derived(app.stops.filter(s => s.kind === 'stop' && s.poi?._sum?.img).length);
+
   function fmtHours(min: number): string {
     if (min < 60) return `${min} min`;
     const h = Math.floor(min / 60);
@@ -306,39 +314,24 @@
     return MACRO_EMOJI[poi.macro] ?? '📍';
   }
 
-  // Foto generica per categoria (Lorem Picsum — seed fisso per coerenza visiva)
-  const CATEGORY_SEED: Record<string, string> = {
-    musei:      'museum-hall',
-    monumenti:  'ancient-ruins',
-    chiese:     'cathedral-interior',
-    arte:       'painting-gallery',
-    teatri:     'opera-stage',
-    storico:    'historic-castle',
-    ristoranti: 'fine-dining-table',
-    pizza:      'italian-pizza',
-    panini:     'sandwich-lunch',
-    gelati:     'gelato-scoop',
-    street:     'street-food-vendor',
-    caffe:      'espresso-coffee',
-    piazze:     'city-fountain-square',
-    parchi:     'green-park-trees',
-    panorami:   'city-rooftop-view',
-    mercati:    'outdoor-market-stalls',
-    spiagge:    'mediterranean-coast',
-    bar:        'bar-drinks-night',
-    pub:        'pub-interior',
-    cocktail:   'cocktail-glass',
-    discoteche: 'nightclub-lights',
-    livemusic:  'concert-stage-lights',
+  // Sistema visivo categorie: gradiente brandizzato + icona (quando manca la foto reale)
+  const MACRO_GRAD: Record<string, string> = {
+    cultura:  'linear-gradient(135deg,#5B7CFA,#3B4FD9)',
+    cibo:     'linear-gradient(135deg,#FFA46C,#F25C54)',
+    luoghi:   'linear-gradient(135deg,#54D6A0,#2EA968)',
+    notturna: 'linear-gradient(135deg,#A78BFA,#6C4BD6)',
+    servizi:  'linear-gradient(135deg,#5BC8C6,#3A9D9A)',
+    scoperte: 'linear-gradient(135deg,#C77DFF,#9B59B6)',
   };
-
-  function categoryPhotoUrl(poi: import('$lib/domain/types').POI | null): string {
-    if (!poi) return 'https://picsum.photos/seed/travel-city/280/200';
-    if (poi.gem) return 'https://picsum.photos/seed/hidden-gem-alley/280/200';
-    const seed = (poi.sub ?? []).map(s => CATEGORY_SEED[s]).find(Boolean)
-      ?? CATEGORY_SEED[poi.macro]
-      ?? 'travel-destination';
-    return `https://picsum.photos/seed/${seed}/280/200`;
+  function catIcon(poi: import('$lib/domain/types').POI | null): string {
+    if (!poi) return 'ti-map-pin';
+    if (poi.gem) return 'ti-compass';
+    for (const s of poi.sub ?? []) if (SUBS[s]) return SUBS[s].icon;
+    return MACROS.find(m => m.id === poi.macro)?.icon ?? 'ti-map-pin';
+  }
+  function catGrad(poi: import('$lib/domain/types').POI | null): string {
+    const m = poi?.gem ? 'scoperte' : (poi?.macro ?? 'cultura');
+    return MACRO_GRAD[m] ?? MACRO_GRAD.cultura;
   }
 
   // Un colore (leggermente diverso) per ogni categoria
@@ -923,6 +916,20 @@
         {/if}
       </header>
 
+      <!-- Insight intelligenti -->
+      {#if app.stops.length}
+      <div class="insights">
+        <div class="insight insight--accent"><i class="ti ti-bolt-filled"></i> Percorso ottimizzato</div>
+        {#if openNowCount}
+        <div class="insight insight--open"><span class="insight-dot"></span> {openNowCount} aperti ora</div>
+        {/if}
+        {#if gemCount}
+        <div class="insight insight--gem"><i class="ti ti-sparkles"></i> {gemCount} {gemCount === 1 ? 'gemma' : 'gemme'}</div>
+        {/if}
+        <div class="insight"><i class="ti ti-photo"></i> {photoCount} con foto</div>
+      </div>
+      {/if}
+
       {#if !app.stops.length}
       <!-- Empty state -->
       <div class="empty-state">
@@ -985,8 +992,13 @@
 
             <div class="tl-card">
               {#if isStop}
-              {@const photoUrl = s.poi?._sum?.img ?? categoryPhotoUrl(s.poi)}
-              <div class="tl-photo" style="background-image:url({photoUrl})"></div>
+              {#if s.poi?._sum?.img}
+              <div class="tl-photo" style="background-image:url({s.poi._sum.img})"></div>
+              {:else}
+              <div class="tl-photo tl-photo--cat" style="background:{catGrad(s.poi)}">
+                <i class="ti {catIcon(s.poi)}"></i>
+              </div>
+              {/if}
               {/if}
               <div class="tl-text">
                 <div class="tl-name">
@@ -1089,9 +1101,13 @@
 
       <!-- Target card -->
       <div class="nav-target {navTarget.gem ? 'gem' : ''}">
-        <div class="nav-target-thumb" style="background:{catColor(navTarget.poi)}1F">
-          <span class="tl-emoji">{poiEmoji(navTarget.poi)}</span>
+        {#if navTarget.poi?._sum?.img}
+        <div class="nav-target-thumb" style="background-image:url({navTarget.poi._sum.img}); background-size:cover"></div>
+        {:else}
+        <div class="nav-target-thumb" style="background:{catGrad(navTarget.poi)}">
+          <i class="ti {catIcon(navTarget.poi)}"></i>
         </div>
+        {/if}
         <div class="nav-target-body">
           <div class="nav-target-name">{navTarget.name}</div>
           {#if navTarget.poi?.story}
@@ -1133,10 +1149,10 @@
     <section class="screen" in:fly={{ y: 10, duration: 220 }}>
 
       <!-- Hero -->
-      <div class="hero {poi._sum?.img ? '' : 'hero-placeholder'}"
-           style={poi._sum?.img ? `background-image:url(${poi._sum.img})` : `background:${catColor(poi)}1F`}>
+      <div class="hero {poi._sum?.img ? '' : 'hero-cat'}"
+           style={poi._sum?.img ? `background-image:url(${poi._sum.img})` : `background:${catGrad(poi)}`}>
         {#if !poi._sum?.img}
-        <span class="hero-emoji">{poiEmoji(poi)}</span>
+        <i class="ti {catIcon(poi)} hero-cat-icon"></i>
         {/if}
         <button class="hero-back" aria-label="torna alle tappe"
                 onclick={() => showScreen('route')}>

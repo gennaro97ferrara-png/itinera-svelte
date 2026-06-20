@@ -240,6 +240,39 @@ i.ti { font-size: 1.15em; line-height: 0; vertical-align: -.13em; }
 .rhead-icon:hover { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
 .rhead-icon:active { transform: scale(.92); }
 
+/* ── Insight strip (segnali "smart") ────────────────────────── */
+.insights {
+  display: flex; gap: 7px; margin: 0 -16px 18px; padding: 2px 16px 4px;
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.insights::-webkit-scrollbar { display: none; }
+.insight {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  padding: 7px 13px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--line);
+  font-size: 12.5px; font-weight: 700; color: var(--ink-2);
+  white-space: nowrap;
+}
+.insight .ti { font-size: 14px; }
+.insight--accent {
+  background: var(--accent-soft); border-color: transparent; color: var(--accent-ink);
+}
+.insight--accent .ti { color: var(--accent); }
+.insight--open { color: var(--green); border-color: color-mix(in srgb, var(--green) 30%, transparent); }
+.insight-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--green);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 50%, transparent);
+  animation: pulse-dot 2s infinite;
+}
+@keyframes pulse-dot {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 50%, transparent); }
+  70%  { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.insight--gem { color: var(--gem-ink); border-color: color-mix(in srgb, var(--gem) 30%, transparent); }
+.insight--gem .ti { color: var(--gem); }
+
 /* timeline */
 .tl { list-style: none; margin: 0; padding: 0; }
 .tl-row {
@@ -284,8 +317,9 @@ i.ti { font-size: 1.15em; line-height: 0; vertical-align: -.13em; }
   display: flex; align-items: center; gap: 12px;
   background: var(--surface); border-radius: var(--r-lg);
   padding: 10px; border: 1px solid var(--line);
-  transition: border-color .15s, box-shadow .15s;
+  transition: border-color .15s, box-shadow .15s, transform .12s;
 }
+.tl-row:not(.start):not(.end):active .tl-card { transform: scale(.985); }
 .tl-row.on .tl-card {
   border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
 }
@@ -297,10 +331,16 @@ i.ti { font-size: 1.15em; line-height: 0; vertical-align: -.13em; }
   background-size: cover; background-position: center;
   background-color: var(--surface-2);
   overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
 }
-@keyframes shimmer {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+.tl-photo--cat { position: relative; }
+.tl-photo--cat::after {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(circle at 30% 25%, rgba(255,255,255,.22), transparent 60%);
+}
+.tl-photo--cat .ti {
+  color: #fff; font-size: 30px; z-index: 1;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,.18));
 }
 .tl-emoji { font-size: 30px; line-height: 1; }
 .tl-text { flex: 1; min-width: 0; }
@@ -848,10 +888,12 @@ input[type="range"]::-moz-range-thumb {
   background: var(--gem-soft); border-left: 4px solid var(--gem); padding-left: 9px;
 }
 .nav-target-thumb {
-  width: 50px; height: 50px; border-radius: var(--r-md); flex-shrink: 0;
+  width: 52px; height: 52px; border-radius: var(--r-md); flex-shrink: 0;
   background: var(--surface-2); color: var(--accent); font-size: 22px;
-  display: flex; align-items: center; justify-content: center;
+  background-position: center;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
 }
+.nav-target-thumb .ti { color: #fff; font-size: 24px; filter: drop-shadow(0 1px 3px rgba(0,0,0,.18)); }
 .nav-target-body { flex: 1; min-width: 0; }
 .nav-target-name {
   font-size: 16px; font-weight: 700; letter-spacing: -.01em;
@@ -1089,7 +1131,14 @@ input[type="range"]::-moz-range-thumb {
 }
 .photo-fallback { font-size: 52px; color: var(--muted); }
 .hero-emoji { font-size: 76px; line-height: 1; z-index: 1; }
-.hero-placeholder::after { background: none; }
+.hero-cat::after {
+  background: radial-gradient(circle at 28% 22%, rgba(255,255,255,.22), transparent 55%),
+              linear-gradient(to top, rgba(0,0,0,.28), transparent 50%);
+}
+.hero-cat-icon {
+  font-size: 88px; color: rgba(255,255,255,.95); z-index: 1;
+  filter: drop-shadow(0 2px 8px rgba(0,0,0,.2));
+}
 
 .hero-back {
   position: absolute; top: 12px; left: 12px; z-index: 2;
