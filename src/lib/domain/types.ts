@@ -1,0 +1,60 @@
+export interface POI {
+  id: string;
+  name: string;
+  macro: string;
+  sub: string[];
+  lat: number;
+  lng: number;
+  visit?: number;
+  wiki?: string | null;
+  story: string;
+  gem?: boolean;
+  storyAiGenerated?: boolean;
+  storySource?: string;
+  ticketUrl?: string;
+  bookingUrl?: string;
+  openingHours?: string;
+  address?: string;
+  score?: number;
+  _sum?: WikiSummary | null;
+  _pend?: Promise<WikiSummary | null>;
+}
+
+export interface WikiSummary {
+  img: string | null;
+  extract: string | null;
+  url: string | null;
+}
+
+export interface Stop {
+  kind: 'start' | 'stop' | 'end';
+  name: string;
+  lat: number;
+  lng: number;
+  poi: POI | null;
+  visit: number;
+  mode: 'visit' | 'pass';
+  gem: boolean;
+  walkMin?: number;
+}
+
+export interface LatLng {
+  lat: number;
+  lng: number;
+}
+
+export type Screen = 'home' | 'route' | 'detail' | 'nav';
+
+export interface MacroCategory {
+  id: string;
+  label: string;
+  icon: string;
+  gem?: boolean;
+  subs: SubCategory[];
+}
+
+export interface SubCategory {
+  id: string;
+  label: string;
+  icon: string;
+}

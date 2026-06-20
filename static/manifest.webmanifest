@@ -1,0 +1,13 @@
+{
+  "name": "Itinera — itinerari a piedi e scoperte",
+  "short_name": "Itinera",
+  "description": "Crea un itinerario a piedi in base alla tua posizione e al tempo che hai.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2C2926",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
