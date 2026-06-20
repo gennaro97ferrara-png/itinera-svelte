@@ -306,6 +306,41 @@
     return MACRO_EMOJI[poi.macro] ?? '📍';
   }
 
+  // Foto generica per categoria (Lorem Picsum — seed fisso per coerenza visiva)
+  const CATEGORY_SEED: Record<string, string> = {
+    musei:      'museum-hall',
+    monumenti:  'ancient-ruins',
+    chiese:     'cathedral-interior',
+    arte:       'painting-gallery',
+    teatri:     'opera-stage',
+    storico:    'historic-castle',
+    ristoranti: 'fine-dining-table',
+    pizza:      'italian-pizza',
+    panini:     'sandwich-lunch',
+    gelati:     'gelato-scoop',
+    street:     'street-food-vendor',
+    caffe:      'espresso-coffee',
+    piazze:     'city-fountain-square',
+    parchi:     'green-park-trees',
+    panorami:   'city-rooftop-view',
+    mercati:    'outdoor-market-stalls',
+    spiagge:    'mediterranean-coast',
+    bar:        'bar-drinks-night',
+    pub:        'pub-interior',
+    cocktail:   'cocktail-glass',
+    discoteche: 'nightclub-lights',
+    livemusic:  'concert-stage-lights',
+  };
+
+  function categoryPhotoUrl(poi: import('$lib/domain/types').POI | null): string {
+    if (!poi) return 'https://picsum.photos/seed/travel-city/280/200';
+    if (poi.gem) return 'https://picsum.photos/seed/hidden-gem-alley/280/200';
+    const seed = (poi.sub ?? []).map(s => CATEGORY_SEED[s]).find(Boolean)
+      ?? CATEGORY_SEED[poi.macro]
+      ?? 'travel-destination';
+    return `https://picsum.photos/seed/${seed}/280/200`;
+  }
+
   // Un colore (leggermente diverso) per ogni categoria
   const MACRO_COLOR: Record<string, string> = {
     cultura:  '#4F6D9E',   // blu
@@ -950,10 +985,8 @@
 
             <div class="tl-card">
               {#if isStop}
-              <div class="tl-photo {s.poi?._sum?.img ? '' : 'ph'}"
-                   style={s.poi?._sum?.img ? `background-image:url(${s.poi._sum.img})` : `background:${catColor(s.poi)}1F`}>
-                {#if !s.poi?._sum?.img}<span class="tl-emoji">{poiEmoji(s.poi)}</span>{/if}
-              </div>
+              {@const photoUrl = s.poi?._sum?.img ?? categoryPhotoUrl(s.poi)}
+              <div class="tl-photo" style="background-image:url({photoUrl})"></div>
               {/if}
               <div class="tl-text">
                 <div class="tl-name">
