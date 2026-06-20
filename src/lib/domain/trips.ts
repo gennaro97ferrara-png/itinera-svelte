@@ -8,6 +8,8 @@ export interface TripDay {
   minutes: number;
   mode: TravelMode;
   cats: string[];
+  departureAt?: string;   // ISO datetime pianificato (opzionale — '' o assente = "adesso")
+  date?: string;          // data calendario YYYY-MM-DD (può differire da departureAt)
   createdAt: number;
 }
 

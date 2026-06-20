@@ -4,31 +4,33 @@
   import { onMount }  from 'svelte';
   import { fly }        from 'svelte/transition';
 
-  import Map        from '$lib/components/Map.svelte';
+  import MapView    from '$lib/components/Map.svelte';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import LoadingOverlay from '$lib/components/LoadingOverlay.svelte';
   import NameDialog from '$lib/components/NameDialog.svelte';
   import { app, showToast } from '$lib/stores/app.svelte';
   import { trips }          from '$lib/stores/trips.svelte';
+  import { settings }       from '$lib/stores/settings.svelte';
   import { MACROS }   from '$lib/domain/categories';
   import { POIS }           from '$lib/data/pois';
   import { generate, fmt, countedVisit, effVisit, catLabel, isGem, haversine, SPEED_MPM, bearing, ROME } from '$lib/domain/algorithm';
   import { recalcStopLegs, routeDistanceKm, routeTravelMin } from '$lib/domain/routing';
   import { fetchSummary }   from '$lib/services/wikipedia';
-  import { fetchPois, fetchPoisInArea } from '$lib/services/overpass';
+  import { fetchPois, fetchPoisInArea, fetchTransitStopsNearRoute } from '$lib/services/overpass';
+  import type { TransitStop } from '$lib/services/overpass';
   import { openStateAt, openLabel } from '$lib/services/openingHours';
   import { searchPlace } from '$lib/services/geocoding';
+  import { computeSchedule, scheduleTotalMin } from '$lib/domain/schedule';
   import type { GeoResult } from '$lib/services/geocoding';
   import type { POI, Stop, Bounds, TravelMode } from '$lib/domain/types';
   import type { TripDay } from '$lib/domain/trips';
 
   function focusEl(el: HTMLElement) { el.focus(); }
 
-  let mapComp: Map;
+  let mapComp: MapView;
   let locLabel  = $state('individuo la tua posizione…');
   let showFar   = $state(false);
   let loading   = $state(true);
-  let usedLocalData = $state(false);
   let now       = $state(new Date());
   let booted    = false;
   let watchId: number | null = null;
@@ -44,6 +46,18 @@
   let replacingIdx  = $state<number | null>(null);
   let replacePool   = $state<POI[]>([]);
   let lastAllPois   = $state<POI[]>([]);
+
+  // ── Transit verification ───────────────────────────────────
+  // legTransitAvail[i] = true  → il leg i è raggiungibile coi mezzi
+  //                     false → nessuna fermata vicina, si va a piedi
+  //                     undefined → non ancora controllato
+  let transitStops    = $state<TransitStop[]>([]);
+  let legTransitAvail = $state<(boolean | undefined)[]>([]);
+  let transitChecking = $state(false);
+
+  // ── Calendar ───────────────────────────────────────────────
+  let calYear  = $state(new Date().getFullYear());
+  let calMonth = $state(new Date().getMonth()); // 0-based
 
   // Features showcase durante il caricamento
   const LOAD_FEATURES = [
@@ -123,7 +137,6 @@
     const radius = searchRadius();
 
     let allPois = POIS;
-    usedLocalData = false;
     loading = true;
     loadStep = 'Cerco luoghi intorno a te…';
 
@@ -139,12 +152,9 @@
         loadStep = `Trovati ${livePois.length} luoghi · calcolo il percorso…`;
         loadStep = `Trovati ${livePois.length} luoghi. Calcolo il percorso...`;
       } else {
-        usedLocalData = true;
         showToast('Nessun luogo trovato in zona · uso i dati demo');
       }
     } catch {
-      usedLocalData = true;
-      usedLocalData = true;
       showToast('Dati live non disponibili · uso i dati demo');
     } finally {
       loading = false;
@@ -159,13 +169,11 @@
     const center = { lat: (bounds.south + bounds.north) / 2, lng: (bounds.west + bounds.east) / 2 };
     app.startPoint = { ...center, name: 'Centro area' };
     app.endPoint   = null;
-    usedLocalData = false;
     loading = true;
     loadStep = 'Cerco luoghi nell area selezionata...';
     let allPois = POIS;
     try {
       const livePois = await fetchPoisInArea(bounds, app.cats);
-      if (livePois.length === 0) usedLocalData = true;
       if (livePois.length > 0) allPois = livePois;
       else showToast('Nessun luogo nell’area · uso i dati demo');
     } catch {
@@ -177,6 +185,7 @@
   }
 
   function buildItinerary(allPois: POI[]) {
+    app.editingDay = null;   // nuova generazione: non si è più in modifica di un giorno salvato
     lastAllPois = allPois;
     const stops = generate({
       minutes: app.minutes,
@@ -299,42 +308,6 @@
     onGenerate();
   }
 
-  function ensureCats(ids: string[]) {
-    ids.forEach(id => app.addCat(id));
-  }
-
-  function tuneLessWalking() {
-    app.minutes = Math.max(60, app.minutes - 30);
-    showToast('Giro accorciato: rigenero con meno spostamenti');
-    onGenerate();
-  }
-
-  function tuneFoodBreak() {
-    ensureCats(['ristoranti', 'caffe', 'gelati']);
-    showToast('Aggiungo una pausa cibo al giro');
-    onGenerate();
-  }
-
-  function tuneHiddenGems() {
-    app.addCat('scoperte');
-    showToast('Cerco piu luoghi nascosti');
-    onGenerate();
-  }
-
-  function removeClosedStops() {
-    const next = app.stops.filter(s =>
-      !(s.kind === 'stop' && s.poi?.openingHours && openStateAt(s.poi.openingHours, now) === 'closed')
-    );
-    if (next.length === app.stops.length) { showToast('Nessuna tappa chiusa nel giro'); return; }
-    if (next.filter(s => s.kind === 'stop').length === 0) {
-      showToast('Tutte le tappe risultano chiuse: meglio sostituirle una alla volta');
-      return;
-    }
-    setRouteStops(next);
-    app.focusIdx = -1;
-    showToast('Tappe chiuse rimosse');
-  }
-
   // ── Calcoli rotta ──────────────────────────────────────────
   let totalWalk = $derived(
     app.stops.reduce((acc, s, i) => {
@@ -347,20 +320,135 @@
   // distanza = minuti di spostamento × velocità del mezzo scelto
   let totalKm = $derived(routeDistanceKm(app.stops, app.mode).toFixed(1).replace('.', ','));
 
-  // ── Insight intelligenti (route screen) ───────────────────
-  let openNowCount = $derived(
-    app.stops.filter(s => s.kind === 'stop' && s.poi?.openingHours
-      && openStateAt(s.poi.openingHours, now) === 'open').length
-  );
-  let gemCount = $derived(app.stops.filter(s => s.kind === 'stop' && s.gem).length);
-  let photoCount = $derived(app.stops.filter(s => s.kind === 'stop' && hasRealImg(s.poi)).length);
-
   function fmtHours(min: number): string {
     if (min < 60) return `${min} min`;
     const h = Math.floor(min / 60);
     const m = min % 60;
     return m ? `${h}h ${m}m` : `${h}h`;
   }
+
+  // ── Orario pianificato ────────────────────────────────────
+  // Programma calcolato: orario di arrivo/partenza, attese e conflitti per ogni tappa.
+  let schedule = $derived.by(() => {
+    if (!correctedStops.length || !app.departureAt) return null;
+    const base = new Date(app.departureAt).getTime();
+    if (isNaN(base)) return null;
+    return computeSchedule(correctedStops, base, { bufferMin: settings.bufferMin });
+  });
+
+  // Riepilogo programma per la testata del planner
+  let scheduleEnd = $derived(schedule ? schedule[schedule.length - 1]?.departure ?? null : null);
+  let scheduleSpan = $derived(schedule ? scheduleTotalMin(schedule) : 0);
+  let scheduleConflicts = $derived(schedule ? schedule.filter(s => s.conflict).length : 0);
+
+  function fmtClock(ms: number): string {
+    return new Date(ms).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function fmtDepLabel(iso: string): string {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const today = new Date();
+    const isToday = d.toDateString() === today.toDateString();
+    const tom = new Date(today); tom.setDate(today.getDate() + 1);
+    const time = d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+    if (isToday) return `Oggi · ${time}`;
+    if (d.toDateString() === tom.toDateString()) return `Domani · ${time}`;
+    return d.toLocaleDateString('it-IT', { weekday: 'short', day: '2-digit', month: 'short' }) + ' · ' + time;
+  }
+
+  // ── Helper orario di partenza (live e a lungo raggio) ──────
+  function pad2(n: number): string { return String(n).padStart(2, '0'); }
+  function toLocalIso(d: Date): string {
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+  function setDepNow() {
+    const d = new Date(); d.setSeconds(0, 0);
+    app.departureAt = toLocalIso(d);
+  }
+  function setDepAt(dayOffset: number, hour: number, minute = 0) {
+    const d = new Date(); d.setDate(d.getDate() + dayOffset);
+    d.setHours(hour, minute, 0, 0);
+    app.departureAt = toLocalIso(d);
+  }
+
+  function changeStopVisit(i: number, delta: number) {
+    const s = app.stops[i];
+    if (!s || s.kind !== 'stop') return;
+    app.setStopVisit(i, (s.visit ?? 30) + delta);
+  }
+
+  // Verifica se una tappa con orari di apertura risulta chiusa all'orario pianificato
+  function closedAtScheduled(i: number): boolean {
+    const s = app.stops[i];
+    const oh = s?.poi?.openingHours;
+    const sc = schedule?.[i];
+    if (!oh || !sc) return false;
+    return openStateAt(oh, new Date(sc.arrival)) === 'closed';
+  }
+
+  // ── Planner ────────────────────────────────────────────────
+  function openPlanner() {
+    if (!app.departureAt) setDepNow();   // entra sempre con un orario, anche "live"
+    showScreen('schedule');
+  }
+
+  // ── Transit leg check ─────────────────────────────────────
+  // Raggio entro cui deve trovarsi una fermata per considerare il leg "coi mezzi"
+  const TRANSIT_RADIUS_M = 450;
+
+  async function checkTransitLegs() {
+    if (app.mode !== 'transit' || app.stops.length < 2) {
+      legTransitAvail = [];
+      transitStops = [];
+      return;
+    }
+    transitChecking = true;
+    try {
+      const stops = await fetchTransitStopsNearRoute(app.stops);
+      transitStops = stops;
+      legTransitAvail = app.stops.map((s, i) => {
+        if (i === 0) return true;  // il punto di partenza non ha un "leg in entrata"
+        const from = app.stops[i - 1];
+        const fromOk = stops.some(ts => haversine({ lat: ts.lat, lng: ts.lng }, from) <= TRANSIT_RADIUS_M);
+        const toOk   = stops.some(ts => haversine({ lat: ts.lat, lng: ts.lng }, s  ) <= TRANSIT_RADIUS_M);
+        return fromOk && toOk;
+      });
+    } catch {
+      legTransitAvail = app.stops.map(() => undefined);
+    } finally {
+      transitChecking = false;
+    }
+  }
+
+  // Ricalcola il walkMin dei leg senza copertura transit con velocità a piedi
+  let correctedStops = $derived.by(() => {
+    if (app.mode !== 'transit' || !legTransitAvail.length) return app.stops;
+    return app.stops.map((s, i) => {
+      if (i === 0 || legTransitAvail[i] !== false) return s;
+      const prev = app.stops[i - 1];
+      return { ...s, walkMin: Math.round(routeTravelMin(prev, s, 'walk')) };
+    });
+  });
+
+  $effect(() => {
+    // Rilancia il check ogni volta che cambiano stops o mode
+    void app.stops;
+    void app.mode;
+    if (browser) checkTransitLegs();
+  });
+
+  // Google Maps Transit deep-link
+  let googleTransitUrl = $derived(
+    app.stops.length >= 2
+      ? `https://www.google.com/maps/dir/${app.stops[0].lat},${app.stops[0].lng}/${app.stops[app.stops.length - 1].lat},${app.stops[app.stops.length - 1].lng}/data=!4m2!4m1!3e3`
+      : 'https://www.google.com/maps'
+  );
+  let moovitUrl = $derived(
+    app.stops.length >= 2
+      ? `https://moovitapp.com/index/it/trasporto_pubblico-${encodeURIComponent(app.stops[0].name + '-' + app.stops[app.stops.length - 1].name)}`
+      : 'https://moovitapp.com'
+  );
 
   function poiTags(poi: import('$lib/domain/types').POI | null): string[] {
     if (!poi) return [];
@@ -820,14 +908,16 @@
     let tripId = saveTripId;
     if (!tripId) tripId = trips.createTrip(newTripName || 'Nuovo viaggio').id;
     const label = dayLabel.trim() || `Giorno ${(trips.get(tripId)?.days.length ?? 0) + 1}`;
-    trips.addDay(tripId, {
+    const saved = trips.addDay(tripId, {
       label,
-      stops:   JSON.parse(JSON.stringify(app.stops)),   // snapshot immutabile
-      minutes: app.minutes, mode: app.mode, cats: [...app.cats]
+      stops:      JSON.parse(JSON.stringify(app.stops)),
+      minutes:    app.minutes, mode: app.mode, cats: [...app.cats],
+      departureAt: app.departureAt || undefined,
     });
+    if (saved) app.editingDay = { tripId, dayId: saved.id, label: saved.label };
     showSave = false;
     app.currentTripId = tripId;
-    showToast('Salvato nel viaggio');
+    showToast('Salvato nel viaggio ✓');
   }
 
   // Quando cambi il viaggio di destinazione, suggerisci la prossima etichetta giorno
@@ -838,16 +928,307 @@
 
   function openTrips() { showScreen('trips'); }
   function openTrip(id: string) { app.currentTripId = id; showScreen('trip'); }
+  function openCalendar() {
+    calYear = new Date().getFullYear();
+    calMonth = new Date().getMonth();
+    showScreen('calendar');
+  }
 
-  function loadDay(d: TripDay) {
-    app.minutes  = d.minutes;
-    app.mode     = d.mode;
+  // ── Settings: upload logo agenzia (→ data URL in localStorage) ──
+  function onLogoUpload(e: Event) {
+    const file = (e.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    if (file.size > 400_000) { showToast('Logo troppo grande (max ~400 KB)'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      settings.agency.logo = String(reader.result ?? '');
+      settings.save();
+    };
+    reader.readAsDataURL(file);
+  }
+
+  // ── Calendar helpers ───────────────────────────────────────
+  const MONTH_IT = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno',
+                    'Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre'];
+  const DOW_IT = ['Lu','Ma','Me','Gi','Ve','Sa','Do'];
+
+  let calDays = $derived.by(() => {
+    const first = new Date(calYear, calMonth, 1);
+    // 0=Sun→6, trasformato in 0=Mon→6
+    const startDow = (first.getDay() + 6) % 7;
+    const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+    const cells: Array<{ day: number | null; iso: string | null }> = [];
+    for (let i = 0; i < startDow; i++) cells.push({ day: null, iso: null });
+    for (let d = 1; d <= daysInMonth; d++) {
+      const iso = `${calYear}-${String(calMonth + 1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      cells.push({ day: d, iso });
+    }
+    return cells;
+  });
+
+  // Tutti i giorni salvati con una data, indicizzati per ISO
+  let daysByDate = $derived.by((): Map<string, Array<{ trip: typeof trips.trips[0]; day: typeof trips.trips[0]['days'][0] }>> => {
+    const m = new Map<string, Array<{ trip: typeof trips.trips[0]; day: typeof trips.trips[0]['days'][0] }>>();
+    for (const t of trips.trips) {
+      for (const d of t.days) {
+        const iso = d.date ?? d.departureAt?.slice(0, 10);
+        if (!iso) continue;
+        if (!m.has(iso)) m.set(iso, []);
+        m.get(iso)!.push({ trip: t, day: d });
+      }
+    }
+    return m;
+  });
+
+  // ── PDF / Print ────────────────────────────────────────────
+  function esc(s: unknown): string {
+    return String(s ?? '').replace(/[&<>"]/g, c =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
+  }
+
+  const PDF_MODE_LABEL: Record<TravelMode, string> = {
+    walk: 'a piedi', bike: 'in bici', car: 'in auto', transit: 'coi mezzi',
+  };
+
+  function pdfDayDateLabel(d: TripDay): string {
+    const iso = d.date ?? d.departureAt?.slice(0, 10);
+    if (!iso) return '';
+    return new Date(iso + 'T12:00').toLocaleDateString('it-IT',
+      { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  }
+
+  // Costruisce le righe tabella di un giorno con orari reali via motore di scheduling.
+  function pdfDayTable(d: TripDay): { rows: string; meta: string } {
+    const stops = d.stops;
+    const baseMs = d.departureAt ? new Date(d.departureAt).getTime() : NaN;
+    const sched = !isNaN(baseMs)
+      ? computeSchedule(stops, baseMs, { bufferMin: settings.bufferMin })
+      : null;
+
+    let stopNo = 0;
+    const rows = stops.map((s, i) => {
+      const sc = sched?.[i];
+      const isStop = s.kind === 'stop';
+      if (isStop) stopNo++;
+
+      const marker = s.kind === 'start' ? '●' : s.kind === 'end' ? '◆' : String(stopNo);
+      const markerCls = s.kind === 'start' ? 'm-start' : s.kind === 'end' ? 'm-end' : 'm-stop';
+
+      const time = sc
+        ? (isStop
+            ? `${fmtClock(sc.arrival)}<span class="t-sep">–</span>${fmtClock(sc.departure)}`
+            : s.kind === 'start' ? fmtClock(sc.arrival) : `arr. ${fmtClock(sc.arrival)}`)
+        : '';
+
+      const cat = s.poi ? esc(catLabel(s.poi)) : '';
+      const visitTxt = isStop ? `${s.visit} min di visita` : (s.kind === 'start' ? 'partenza' : 'arrivo');
+      const addr = s.poi?.address ? `<div class="p-addr">📍 ${esc(s.poi.address)}</div>` : '';
+      const oh = s.poi?.openingHours ? `<div class="p-oh">🕒 ${esc(s.poi.openingHours)}</div>` : '';
+      const fixed = s.fixedTime ? `<span class="p-fixed">orario fisso ${esc(s.fixedTime)}</span>` : '';
+      const conflict = sc?.conflict ? `<span class="p-conflict">⚠ conflitto orario</span>` : '';
+      const wait = sc && sc.waitMin > 0 ? `<span class="p-wait">attesa ${sc.waitMin} min</span>` : '';
+
+      const leg = (i > 0 && (s.walkMin ?? 0) > 0)
+        ? `<tr class="leg-row"><td></td><td colspan="2" class="leg">↓ ${s.walkMin} min ${PDF_MODE_LABEL[d.mode]}</td></tr>`
+        : '';
+
+      return `${leg}<tr>
+        <td class="t-time">${time}</td>
+        <td class="t-marker"><span class="marker ${markerCls}">${marker}</span></td>
+        <td class="t-body">
+          <div class="p-name">${esc(s.name)} ${fixed}${conflict}${wait}</div>
+          <div class="p-meta">${cat ? esc(cat) + ' · ' : ''}${visitTxt}</div>
+          ${addr}${oh}
+        </td>
+      </tr>`;
+    }).join('');
+
+    const nStops = stops.filter(s => s.kind === 'stop').length;
+    const endTxt = sched ? ` · fine ${fmtClock(sched[sched.length - 1].departure)}` : '';
+    const meta = `${nStops} tappe · ${fmtHours(d.minutes)} ${PDF_MODE_LABEL[d.mode]}${d.departureAt ? ` · partenza ${fmtClock(new Date(d.departureAt).getTime())}` : ''}${endTxt}`;
+    return { rows, meta };
+  }
+
+  function pdfAgencyHeader(): string {
+    const a = settings.agency;
+    if (!settings.hasAgency()) return '';
+    const logo = a.logo ? `<img class="ag-logo" src="${esc(a.logo)}" alt="logo"/>` : '';
+    const contacts = [
+      a.phone   ? `☎ ${esc(a.phone)}` : '',
+      a.email   ? `✉ ${esc(a.email)}` : '',
+      a.website ? `🌐 ${esc(a.website)}` : '',
+    ].filter(Boolean).join(' &nbsp;·&nbsp; ');
+    return `<div class="agency-bar">
+      ${logo}
+      <div class="ag-info">
+        <div class="ag-name">${esc(a.name || 'Agenzia viaggi')}</div>
+        ${contacts ? `<div class="ag-contacts">${contacts}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  function pdfFooter(): string {
+    const a = settings.agency;
+    const note = a.note ? `<div class="foot-note">${esc(a.note)}</div>` : '';
+    const sig = settings.hasAgency()
+      ? `${esc(a.name || 'Agenzia')}${a.email ? ' · ' + esc(a.email) : ''}`
+      : 'Itinera';
+    return `${note}<div class="foot-line">${sig} · documento generato il ${new Date().toLocaleDateString('it-IT')} · powered by Itinera</div>`;
+  }
+
+  const PDF_CSS = `
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 760px; margin: 0 auto; padding: 36px 32px; color: #1b2320; }
+    .agency-bar { display: flex; align-items: center; gap: 14px; padding-bottom: 14px; margin-bottom: 22px; border-bottom: 2px solid #0B7A6F; }
+    .ag-logo { max-height: 52px; max-width: 160px; object-fit: contain; }
+    .ag-name { font-size: 17px; font-weight: 800; color: #0B7A6F; }
+    .ag-contacts { font-size: 12px; color: #555; margin-top: 2px; }
+    .cover { margin-bottom: 30px; }
+    .cover h1 { font-size: 30px; margin: 0 0 6px; color: #0B7A6F; letter-spacing: -.01em; }
+    .cover .sub { font-size: 14px; color: #555; }
+    .summary { display: flex; flex-wrap: wrap; gap: 18px; margin: 16px 0 6px; padding: 14px 16px; background: #f3f7f5; border-radius: 10px; }
+    .summary .s-item { font-size: 13px; }
+    .summary .s-item b { display: block; font-size: 20px; color: #0B7A6F; }
+    .day-block { page-break-inside: avoid; margin: 26px 0; }
+    .day-head { display: flex; align-items: baseline; justify-content: space-between; border-bottom: 1px solid #dfe4e1; padding-bottom: 6px; margin-bottom: 6px; }
+    .day-head h2 { font-size: 19px; margin: 0; }
+    .day-head .d-date { font-size: 13px; color: #0B7A6F; font-weight: 600; }
+    .day-meta { font-size: 12px; color: #777; margin-bottom: 10px; }
+    table { width: 100%; border-collapse: collapse; }
+    td { padding: 7px 6px; vertical-align: top; border-bottom: 1px solid #eef1ef; }
+    .t-time { width: 96px; white-space: nowrap; font-weight: 700; color: #0B7A6F; font-size: 13px; }
+    .t-sep { color: #aaa; margin: 0 1px; font-weight: 400; }
+    .t-marker { width: 30px; }
+    .marker { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; font-size: 11px; font-weight: 800; color: #fff; background: #0B7A6F; }
+    .marker.m-start { background: #27AE60; }
+    .marker.m-end { background: #888; }
+    .p-name { font-size: 14px; font-weight: 700; }
+    .p-meta { font-size: 12px; color: #777; margin-top: 1px; }
+    .p-addr, .p-oh { font-size: 11.5px; color: #888; margin-top: 2px; }
+    .p-fixed { font-size: 10px; font-weight: 700; color: #0B7A6F; background: #e5f2ef; padding: 1px 6px; border-radius: 8px; margin-left: 4px; }
+    .p-conflict { font-size: 10px; font-weight: 700; color: #C0392B; background: #fbebe6; padding: 1px 6px; border-radius: 8px; margin-left: 4px; }
+    .p-wait { font-size: 10px; font-weight: 700; color: #B7603B; background: #f7ece6; padding: 1px 6px; border-radius: 8px; margin-left: 4px; }
+    .leg-row td { border: none; padding: 1px 6px; }
+    .leg { font-size: 11px; color: #999; padding-left: 10px; }
+    .map-link { font-size: 12px; margin-top: 8px; }
+    .map-link a { color: #0B7A6F; text-decoration: none; }
+    .foot-note { font-size: 11px; color: #666; margin-top: 30px; padding: 10px 12px; background: #f7f7f5; border-radius: 8px; line-height: 1.5; white-space: pre-wrap; }
+    .foot-line { margin-top: 14px; font-size: 10.5px; color: #aaa; border-top: 1px solid #eee; padding-top: 8px; }
+    @media print { body { padding: 16px; } .day-block { page-break-inside: avoid; } a { color: #0B7A6F; } }
+  `;
+
+  function openPrintWindow(title: string, bodyHtml: string) {
+    const html = `<!DOCTYPE html><html lang="it"><head><meta charset="utf-8">
+<title>${esc(title)}</title><style>${PDF_CSS}</style></head><body>${bodyHtml}</body></html>`;
+    const win = window.open('', '_blank', 'width=860,height=720');
+    if (!win) { showToast('Abilita i popup per esportare il PDF'); return; }
+    win.document.write(html);
+    win.document.close();
+    win.addEventListener('load', () => setTimeout(() => win.print(), 350));
+  }
+
+  function mapsLinkForStops(stops: Stop[]): string {
+    const pts = stops.map(s => `${s.lat},${s.lng}`).join('/');
+    return `https://www.google.com/maps/dir/${pts}`;
+  }
+
+  function printTrip(tripId: string) {
+    const trip = trips.get(tripId);
+    if (!trip) return;
+    if (!trip.days.length) { showToast('Aggiungi almeno un giorno al viaggio'); return; }
+
+    // intervallo date del viaggio
+    const dates = trip.days.map(d => d.date ?? d.departureAt?.slice(0, 10)).filter(Boolean) as string[];
+    dates.sort();
+    const range = dates.length
+      ? (dates[0] === dates[dates.length - 1]
+          ? new Date(dates[0] + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' })
+          : `${new Date(dates[0] + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })} – ${new Date(dates[dates.length - 1] + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' })}`)
+      : '';
+
+    const totalStops = trip.days.reduce((a, d) => a + d.stops.filter(s => s.kind === 'stop').length, 0);
+
+    const dayBlocks = trip.days.map((d, idx) => {
+      const { rows, meta } = pdfDayTable(d);
+      const dateStr = pdfDayDateLabel(d);
+      return `<div class="day-block">
+        <div class="day-head">
+          <h2>Giorno ${idx + 1} · ${esc(d.label)}</h2>
+          ${dateStr ? `<span class="d-date">${esc(dateStr)}</span>` : ''}
+        </div>
+        <div class="day-meta">${meta}</div>
+        <table>${rows}</table>
+        <div class="map-link">🗺 <a href="${mapsLinkForStops(d.stops)}" target="_blank" rel="noopener">Apri il percorso del giorno su Google Maps</a></div>
+      </div>`;
+    }).join('');
+
+    const body = `
+      ${pdfAgencyHeader()}
+      <div class="cover">
+        <h1>${esc(trip.name)}</h1>
+        <div class="sub">Programma di viaggio${range ? ' · ' + esc(range) : ''}</div>
+        <div class="summary">
+          <div class="s-item"><b>${trip.days.length}</b> ${trip.days.length === 1 ? 'giorno' : 'giorni'}</div>
+          <div class="s-item"><b>${totalStops}</b> tappe totali</div>
+          ${range ? `<div class="s-item"><b style="font-size:14px">${esc(range)}</b> date</div>` : ''}
+        </div>
+      </div>
+      ${dayBlocks}
+      ${pdfFooter()}`;
+
+    openPrintWindow(`${trip.name} — programma di viaggio`, body);
+  }
+
+  // Esporta l'itinerario attualmente aperto come PDF di un singolo giorno.
+  function printCurrentItinerary() {
+    if (!app.stops.length) { showToast('Genera prima un itinerario'); return; }
+    const label = app.editingDay?.label ?? 'Itinerario';
+    const day: TripDay = {
+      id: 'current', label,
+      stops: app.stops, minutes: app.minutes, mode: app.mode, cats: [...app.cats],
+      departureAt: app.departureAt || undefined,
+      createdAt: Date.now(),
+    };
+    const { rows, meta } = pdfDayTable(day);
+    const dateStr = pdfDayDateLabel(day);
+    const body = `
+      ${pdfAgencyHeader()}
+      <div class="cover">
+        <h1>${esc(label)}</h1>
+        <div class="sub">${dateStr ? esc(dateStr) + ' · ' : ''}${esc(meta)}</div>
+      </div>
+      <div class="day-block">
+        <table>${rows}</table>
+        <div class="map-link">🗺 <a href="${mapsLinkForStops(app.stops)}" target="_blank" rel="noopener">Apri il percorso su Google Maps</a></div>
+      </div>
+      ${pdfFooter()}`;
+    openPrintWindow(`${label} — itinerario`, body);
+  }
+
+  function loadDay(d: TripDay, tripId: string) {
+    app.minutes     = d.minutes;
+    app.mode        = d.mode;
+    app.departureAt = d.departureAt ?? '';
     setRouteStops(JSON.parse(JSON.stringify(d.stops)));
     app.cats     = [...d.cats];
     app.loop     = !d.stops.some(s => s.kind === 'end');
     app.focusIdx = -1;
+    app.editingDay = { tripId, dayId: d.id, label: d.label };
     showScreen('route');
     prefetchPhotos();
+  }
+
+  function updateCurrentDay() {
+    if (!app.editingDay) return;
+    trips.updateDay(app.editingDay.tripId, app.editingDay.dayId, {
+      label:       app.editingDay.label,
+      stops:       JSON.parse(JSON.stringify(app.stops)),
+      minutes:     app.minutes,
+      mode:        app.mode,
+      cats:        [...app.cats],
+      departureAt: app.departureAt || undefined,
+    });
+    showToast('Itinerario aggiornato ✓');
   }
 
   function closeNameDialog() { nameDialog.open = false; }
@@ -910,6 +1291,7 @@
   // ── Mount ─────────────────────────────────────────────────
   onMount(() => {
     trips.load();
+    settings.load();
     locate();
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
     const clock = setInterval(() => { now = new Date(); }, 60_000);
@@ -928,7 +1310,7 @@
 <div class="app">
 
   <!-- MAP (always visible) -->
-  <Map bind:this={mapComp} />
+  <MapView bind:this={mapComp} />
 
   <!-- Brand pill -->
   <div class="brand-pill">
@@ -1025,6 +1407,37 @@
         </div>
       </div>
 
+      <!-- Orario di partenza -->
+      <div class="section">
+        <div class="label-sm">Quando parti?</div>
+        <div class="dep-row">
+          <button class="dep-opt {!app.departureAt ? 'on' : ''}"
+                  onclick={() => app.departureAt = ''}>
+            <i class="ti ti-bolt"></i> Adesso
+          </button>
+          <button class="dep-opt {fmtDepLabel(app.departureAt).startsWith('Oggi') ? 'on' : ''}"
+                  onclick={() => setDepAt(0, 9, 0)}>
+            <i class="ti ti-sun"></i> Oggi 9:00
+          </button>
+          <button class="dep-opt {fmtDepLabel(app.departureAt).startsWith('Domani') ? 'on' : ''}"
+                  onclick={() => setDepAt(1, 9, 0)}>
+            <i class="ti ti-sunrise"></i> Domani
+          </button>
+          <label class="dep-opt dep-opt--pick {app.departureAt && !fmtDepLabel(app.departureAt).match(/^(Oggi|Domani)/) ? 'on' : ''}">
+            <i class="ti ti-calendar-time"></i>
+            <span>{app.departureAt ? fmtDepLabel(app.departureAt) : 'Scegli data'}</span>
+            <input type="datetime-local"
+                   value={app.departureAt}
+                   oninput={e => app.departureAt = (e.target as HTMLInputElement).value} />
+          </label>
+        </div>
+        {#if app.departureAt && app.mode === 'transit'}
+        <p class="dep-hint dep-hint--transit"><i class="ti ti-info-circle"></i> Con i mezzi gli orari sono stime. Verifica sempre in app.</p>
+        {:else if app.departureAt}
+        <p class="dep-hint">Ogni tappa avrà il suo orario. Affinalo poi con <strong>Pianifica orari</strong>.</p>
+        {/if}
+      </div>
+
       <!-- Interessi: macro → micro -->
       <div class="section">
         <div class="label-sm">Cosa ti interessa</div>
@@ -1104,8 +1517,12 @@
           <p class="rhead-meta">{app.intermediateCount} tappe · {totalKm} km · {fmt(totalVisit)} di visite</p>
           {/if}
         </div>
-        <button class="rhead-icon" aria-label="i miei viaggi" onclick={openTrips}>
+        <button class="rhead-trips-btn" onclick={openTrips} aria-label="i miei viaggi salvati">
           <i class="ti ti-luggage"></i>
+          <span>Salvati</span>
+          {#if trips.trips.length > 0}
+          <span class="rhead-trips-count">{trips.trips.length}</span>
+          {/if}
         </button>
         {#if app.stops.length}
         <button class="rhead-icon" aria-label="condividi" onclick={shareRoute}>
@@ -1114,29 +1531,73 @@
         {/if}
       </header>
 
-      <!-- Insight intelligenti -->
-      {#if app.stops.length}
-      <div class="insights">
-        <div class="insight insight--accent"><i class="ti ti-bolt-filled"></i> Percorso ottimizzato</div>
-        {#if usedLocalData}
-        <div class="insight"><i class="ti ti-database"></i> Proposta con dati locali</div>
-        {/if}
-        {#if openNowCount}
-        <div class="insight insight--open"><span class="insight-dot"></span> {openNowCount} aperti ora</div>
-        {/if}
-        {#if gemCount}
-        <div class="insight insight--gem"><i class="ti ti-sparkles"></i> {gemCount} {gemCount === 1 ? 'gemma' : 'gemme'}</div>
-        {/if}
-        <div class="insight"><i class="ti ti-photo"></i> {photoCount} con foto</div>
+      <!-- Banner "stai modificando" -->
+      {#if app.editingDay && app.stops.length}
+      {@const editingTrip = trips.get(app.editingDay.tripId)}
+      <div class="editing-banner">
+        <i class="ti ti-pencil"></i>
+        <div class="editing-banner-text">
+          <span class="editing-banner-label">Stai modificando</span>
+          <span class="editing-banner-val">{app.editingDay.label}{editingTrip ? ` · ${editingTrip.name}` : ''}</span>
+        </div>
+        <button class="editing-banner-close" onclick={() => { app.editingDay = null; }}
+                aria-label="esci dalla modalità modifica">
+          <i class="ti ti-x"></i>
+        </button>
       </div>
       {/if}
 
+      <!-- Avviso trasporto pubblico -->
+      {#if app.mode === 'transit' && app.stops.length}
+      <div class="transit-notice">
+        <i class="ti ti-bus"></i>
+        <div class="transit-notice-body">
+          <strong>Trasporto pubblico</strong>
+          <span>I tempi sono stime basate sulla velocità media. Verifica gli orari reali prima di partire.</span>
+          <div class="transit-links">
+            <a class="transit-link" href={googleTransitUrl} target="_blank" rel="noopener">
+              <i class="ti ti-brand-google-maps"></i> Google Maps
+            </a>
+            <a class="transit-link" href={moovitUrl} target="_blank" rel="noopener">
+              <i class="ti ti-external-link"></i> Moovit
+            </a>
+          </div>
+        </div>
+      </div>
+      {/if}
+
+      <!-- OD bar: partenza → destinazione -->
       {#if app.stops.length}
-      <div class="route-tunes" aria-label="correzioni rapide itinerario">
-        <button class="route-tune" onclick={tuneLessWalking}><i class="ti ti-walk"></i> Meno camminata</button>
-        <button class="route-tune" onclick={tuneFoodBreak}><i class="ti ti-tools-kitchen-2"></i> Pausa cibo</button>
-        <button class="route-tune" onclick={tuneHiddenGems}><i class="ti ti-compass"></i> Piu scoperte</button>
-        <button class="route-tune" onclick={removeClosedStops}><i class="ti ti-door-exit"></i> Evita chiusi</button>
+      <div class="od-bar">
+        <div class="od-bar-row">
+          <button class="od-bar-point" onclick={() => openOdSearch('start')}
+                  aria-label="cambia partenza">
+            <span class="od-bar-dot od-bar-dot--start"></span>
+            <div class="od-bar-text">
+              <span class="od-bar-label">Da</span>
+              <span class="od-bar-val">{app.startPoint?.name ?? 'La mia posizione'}</span>
+            </div>
+          </button>
+          <div class="od-bar-sep">
+            <span class="od-bar-line"></span>
+            <i class="ti ti-arrow-right od-bar-arrow"></i>
+            <span class="od-bar-line"></span>
+          </div>
+          <button class="od-bar-point" onclick={() => openOdSearch('end')}
+                  aria-label="cambia destinazione">
+            <span class="od-bar-dot od-bar-dot--end"></span>
+            <div class="od-bar-text">
+              <span class="od-bar-label">A</span>
+              <span class="od-bar-val">{app.endPoint?.name ?? (app.roundTrip ? 'Ritorno al via' : 'Libera')}</span>
+            </div>
+          </button>
+          {#if app.endPoint}
+          <button class="od-bar-clear" onclick={() => { app.endPoint = null; onGenerate(); }}
+                  aria-label="rimuovi destinazione">
+            <i class="ti ti-x"></i>
+          </button>
+          {/if}
+        </div>
       </div>
       {/if}
 
@@ -1198,7 +1659,18 @@
           <!-- content -->
           <div class="tl-content">
             {#if legMin > 0 && i > 0}
-            <div class="tl-walk"><i class="ti {modeIcon}"></i> {legMin} min {modeVerb}</div>
+            {@const legAvail = legTransitAvail[i]}
+            {@const noTransit = app.mode === 'transit' && legAvail === false}
+            {@const legIcon = noTransit ? 'ti-walk' : modeIcon}
+            {@const legVerb = noTransit ? 'a piedi' : modeVerb}
+            {@const effectiveLeg = noTransit ? (correctedStops[i]?.walkMin ?? legMin) : legMin}
+            <div class="tl-walk {noTransit ? 'tl-walk--foot' : ''}">
+              <i class="ti {legIcon}"></i> {effectiveLeg} min {legVerb}
+              {#if noTransit}<span class="tl-walk-note">· nessun mezzo disponibile</span>{/if}
+              {#if app.mode === 'transit' && legAvail === undefined && transitChecking}
+              <span class="tl-walk-checking"><i class="ti ti-loader-2 spin"></i></span>
+              {/if}
+            </div>
             {/if}
 
             <div class="tl-card">
@@ -1224,6 +1696,18 @@
                     arrivo{app.loop ? ' · ritorno al via' : ''}
                   {/if}
                 </div>
+                {#if schedule?.[i]}
+                <div class="tl-clock">
+                  <i class="ti ti-clock"></i>
+                  {#if s.kind === 'start'}
+                    {fmtClock(schedule[i].arrival)}
+                  {:else if isStop}
+                    {fmtClock(schedule[i].arrival)}–{fmtClock(schedule[i].departure)}
+                  {:else}
+                    arrivo {fmtClock(schedule[i].arrival)}
+                  {/if}
+                </div>
+                {/if}
                 {#if reason}
                 <div class="tl-reason">{reason}</div>
                 {/if}
@@ -1241,6 +1725,13 @@
             <!-- azioni tappa selezionata -->
             {#if isStop && i === app.focusIdx}
             <div class="tl-stop-actions">
+              <!-- Stepper durata sosta -->
+              <div class="tl-stepper">
+                <button class="tl-stepper-btn" onclick={e => { e.stopPropagation(); changeStopVisit(i, -15); }}>−</button>
+                <span class="tl-stepper-val"><i class="ti ti-clock-hour-4"></i> {s.visit} min</span>
+                <button class="tl-stepper-btn" onclick={e => { e.stopPropagation(); changeStopVisit(i, +15); }}>+</button>
+              </div>
+
               {#if s.poi?.address}
               <span class="tl-addr"><i class="ti ti-map-pin"></i> {s.poi.address}</span>
               {/if}
@@ -1279,14 +1770,31 @@
         <button class="btn btn-primary btn-block" onclick={startNav}>
           <i class="ti ti-navigation"></i>Avvia il giro
         </button>
+        <button class="btn btn-outline btn-block" onclick={openPlanner}>
+          <i class="ti ti-clock-edit"></i>
+          {app.departureAt ? `Pianifica orari · ${fmtDepLabel(app.departureAt)}` : 'Pianifica orari'}
+        </button>
         <div class="rfoot-row">
+          {#if app.editingDay}
+          <button class="btn btn-save btn-block" onclick={updateCurrentDay}>
+            <i class="ti ti-device-floppy"></i> Aggiorna itinerario
+          </button>
+          <button class="btn btn-ghost rfoot-icon-btn" onclick={openSaveSheet}
+                  title="Salva come nuovo giorno" aria-label="salva come nuovo giorno">
+            <i class="ti ti-copy-plus"></i>
+          </button>
+          {:else}
           <button class="btn btn-outline btn-block" onclick={openSaveSheet}>
             <i class="ti ti-bookmark"></i> Salva nel viaggio
           </button>
-          <button class="btn btn-ghost btn-block" onclick={openMaps}>
-            <i class="ti ti-brand-google-maps"></i> Google Maps
+          {/if}
+          <button class="btn btn-ghost btn-block" onclick={printCurrentItinerary}>
+            <i class="ti ti-file-type-pdf"></i> PDF
           </button>
         </div>
+        <button class="rfoot-maps-link" onclick={openMaps}>
+          <i class="ti ti-brand-google-maps"></i> Apri in Google Maps
+        </button>
       </div>
       {/if}
     </section>
@@ -1473,6 +1981,9 @@
     <section class="screen" in:fly={{ y: 10, duration: 220 }}>
       <div class="edit-head">
         <span class="edit-title"><i class="ti ti-luggage"></i> I miei viaggi</span>
+        <button class="rhead-icon" aria-label="profilo agenzia" onclick={() => showScreen('settings')}>
+          <i class="ti ti-building-store"></i>
+        </button>
         <button class="edit-close" aria-label="chiudi" onclick={() => showScreen('route')}>
           <i class="ti ti-x"></i>
         </button>
@@ -1505,9 +2016,14 @@
       </div>
       {/if}
 
-      <button class="btn btn-primary btn-block btn-sticky" onclick={newTripPrompt}>
-        <i class="ti ti-plus"></i> Nuovo viaggio
-      </button>
+      <div class="trips-footer-row">
+        <button class="btn btn-primary btn-block" onclick={newTripPrompt}>
+          <i class="ti ti-plus"></i> Nuovo viaggio
+        </button>
+        <button class="btn btn-ghost trips-cal-btn" onclick={openCalendar} aria-label="vista calendario">
+          <i class="ti ti-calendar-month"></i>
+        </button>
+      </div>
     </section>
     {/if}
 
@@ -1535,7 +2051,7 @@
       <div class="day-list">
         {#each trip.days as d, i}
         <div class="day-card">
-          <button class="day-main" onclick={() => loadDay(d)}>
+          <button class="day-main" onclick={() => loadDay(d, trip.id)}>
             <span class="day-num">{i + 1}</span>
             <div class="day-text">
               <div class="day-label">{d.label}</div>
@@ -1543,10 +2059,29 @@
                 <i class="ti {modeInfo(d.mode).icon}"></i>
                 {d.stops.filter(s => s.kind === 'stop').length} tappe · {fmtHours(d.minutes)}
               </div>
+              {#if d.date || d.departureAt}
+              <div class="day-date-badge">
+                <i class="ti ti-calendar"></i>
+                {#if d.date}
+                  {new Date(d.date + 'T12:00').toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' })}
+                {:else if d.departureAt}
+                  {new Date(d.departureAt).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' })}
+                {/if}
+                {#if d.departureAt}
+                  · {new Date(d.departureAt).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}
+                {/if}
+              </div>
+              {/if}
             </div>
-            <i class="ti ti-chevron-right"></i>
+            <span class="day-edit-hint"><i class="ti ti-pencil"></i> Modifica</span>
           </button>
           <div class="day-card-actions">
+            <!-- Date picker per il calendario -->
+            <label class="od-mini day-date-picker" aria-label="assegna data" title="Assegna data">
+              <i class="ti ti-calendar-plus"></i>
+              <input type="date" value={d.date ?? d.departureAt?.slice(0,10) ?? ''}
+                     oninput={e => trips.setDayDate(trip.id, d.id, (e.target as HTMLInputElement).value)} />
+            </label>
             <button class="od-mini" aria-label="sposta su" disabled={i === 0}
                     onclick={() => trips.moveDay(trip.id, i, -1)}><i class="ti ti-arrow-up"></i></button>
             <button class="od-mini" aria-label="sposta giù" disabled={i === trip.days.length - 1}
@@ -1559,9 +2094,291 @@
       </div>
       {/if}
 
-      <button class="btn btn-primary btn-block btn-sticky"
-              onclick={() => { app.currentTripId = trip.id; showScreen('home'); }}>
-        <i class="ti ti-plus"></i> Nuovo itinerario per questo viaggio
+      <div class="trips-footer-row">
+        <button class="btn btn-primary btn-block"
+                onclick={() => { app.currentTripId = trip.id; showScreen('home'); }}>
+          <i class="ti ti-plus"></i> Nuovo giorno
+        </button>
+        <button class="btn btn-ghost trips-cal-btn" onclick={() => printTrip(trip.id)}
+                aria-label="esporta PDF" title="Stampa / Esporta PDF">
+          <i class="ti ti-printer"></i>
+        </button>
+      </div>
+    </section>
+    {/if}
+
+    <!-- ══════════ CALENDAR ════════════════════════════════════ -->
+    {#if app.screen === 'calendar'}
+    <section class="screen" in:fly={{ y: 10, duration: 220 }}>
+      <div class="edit-head">
+        <button class="rhead-icon" aria-label="indietro" onclick={() => showScreen('trips')}>
+          <i class="ti ti-chevron-left"></i>
+        </button>
+        <span class="edit-title"><i class="ti ti-calendar-month"></i> Calendario</span>
+        <button class="edit-close" aria-label="chiudi" onclick={() => showScreen('route')}>
+          <i class="ti ti-x"></i>
+        </button>
+      </div>
+
+      <!-- Navigazione mese -->
+      <div class="cal-nav">
+        <button class="cal-nav-btn" aria-label="mese precedente" onclick={() => { if (calMonth === 0) { calMonth = 11; calYear--; } else calMonth--; }}>
+          <i class="ti ti-chevron-left"></i>
+        </button>
+        <span class="cal-nav-label">{MONTH_IT[calMonth]} {calYear}</span>
+        <button class="cal-nav-btn" aria-label="mese successivo" onclick={() => { if (calMonth === 11) { calMonth = 0; calYear++; } else calMonth++; }}>
+          <i class="ti ti-chevron-right"></i>
+        </button>
+      </div>
+
+      <!-- Griglia mese -->
+      <div class="cal-grid">
+        {#each DOW_IT as d}
+        <div class="cal-dow">{d}</div>
+        {/each}
+        {#each calDays as cell}
+        {@const entries = cell.iso ? (daysByDate.get(cell.iso) ?? []) : []}
+        {@const isToday = cell.iso === new Date().toISOString().slice(0,10)}
+        <div class="cal-cell {cell.day ? '' : 'cal-cell--empty'} {isToday ? 'cal-cell--today' : ''} {entries.length ? 'cal-cell--has-events' : ''}">
+          {#if cell.day}
+          <span class="cal-day-num">{cell.day}</span>
+          {#if entries.length}
+          <div class="cal-dots">
+            {#each entries.slice(0, 3) as e}
+            <button class="cal-dot-btn" onclick={() => loadDay(e.day, e.trip.id)}
+                    title="{e.trip.name} · {e.day.label}">
+            </button>
+            {/each}
+          </div>
+          <div class="cal-event-labels">
+            {#each entries.slice(0, 2) as e}
+            <button class="cal-event-label" onclick={() => loadDay(e.day, e.trip.id)}>
+              {e.day.label}
+            </button>
+            {/each}
+            {#if entries.length > 2}
+            <span class="cal-event-more">+{entries.length - 2}</span>
+            {/if}
+          </div>
+          {/if}
+          {/if}
+        </div>
+        {/each}
+      </div>
+
+      {#if [...daysByDate.values()].flat().length === 0}
+      <div class="cal-empty-hint">
+        <i class="ti ti-calendar-off"></i>
+        <p>Nessun itinerario con data. Assegna una data ai giorni dei tuoi viaggi per vederli qui.</p>
+      </div>
+      {/if}
+    </section>
+    {/if}
+
+    <!-- ══════════ SCHEDULE (planner orari step-by-step) ═══════ -->
+    {#if app.screen === 'schedule'}
+    <section class="screen" in:fly={{ y: 10, duration: 220 }}>
+      <div class="edit-head">
+        <button class="rhead-icon" aria-label="indietro" onclick={() => showScreen('route')}>
+          <i class="ti ti-chevron-left"></i>
+        </button>
+        <span class="edit-title"><i class="ti ti-clock-edit"></i> Pianifica orari</span>
+        <button class="rhead-icon" aria-label="impostazioni agenzia" onclick={() => showScreen('settings')}>
+          <i class="ti ti-settings"></i>
+        </button>
+      </div>
+
+      <!-- Partenza -->
+      <div class="plan-dep">
+        <div class="plan-dep-head">
+          <span class="label-sm">Partenza</span>
+          <span class="plan-dep-presets">
+            <button class="plan-chip" onclick={setDepNow}>Adesso</button>
+            <button class="plan-chip" onclick={() => setDepAt(0, 9)}>Oggi 9:00</button>
+            <button class="plan-chip" onclick={() => setDepAt(1, 9)}>Domani 9:00</button>
+          </span>
+        </div>
+        <label class="plan-dep-field">
+          <i class="ti ti-calendar-time"></i>
+          <input type="datetime-local" value={app.departureAt}
+                 oninput={e => app.departureAt = (e.target as HTMLInputElement).value} />
+        </label>
+      </div>
+
+      <!-- Riepilogo programma -->
+      {#if schedule}
+      <div class="plan-summary {scheduleConflicts ? 'plan-summary--warn' : ''}">
+        <div class="plan-summary-item">
+          <span class="plan-summary-val">{fmtClock(new Date(app.departureAt).getTime())}</span>
+          <span class="plan-summary-lbl">inizio</span>
+        </div>
+        <i class="ti ti-arrow-right"></i>
+        <div class="plan-summary-item">
+          <span class="plan-summary-val">{scheduleEnd ? fmtClock(scheduleEnd) : '—'}</span>
+          <span class="plan-summary-lbl">fine</span>
+        </div>
+        <div class="plan-summary-item">
+          <span class="plan-summary-val">{fmtHours(scheduleSpan)}</span>
+          <span class="plan-summary-lbl">durata</span>
+        </div>
+        {#if scheduleConflicts}
+        <div class="plan-summary-item plan-summary-conflict">
+          <span class="plan-summary-val">{scheduleConflicts}</span>
+          <span class="plan-summary-lbl">conflitti</span>
+        </div>
+        {/if}
+      </div>
+
+      <!-- Buffer transfer -->
+      <div class="plan-buffer">
+        <span><i class="ti ti-hourglass"></i> Margine tra le tappe (transfer)</span>
+        <div class="plan-buffer-ctrl">
+          <button class="tl-stepper-btn" onclick={() => { settings.bufferMin = Math.max(0, settings.bufferMin - 5); settings.save(); }}>−</button>
+          <span class="plan-buffer-val">{settings.bufferMin} min</span>
+          <button class="tl-stepper-btn" onclick={() => { settings.bufferMin = Math.min(60, settings.bufferMin + 5); settings.save(); }}>+</button>
+        </div>
+      </div>
+      {/if}
+
+      <!-- Lista step -->
+      <div class="plan-list">
+        {#each app.stops as s, i}
+        {@const sc = schedule?.[i]}
+        {@const isStop = s.kind === 'stop'}
+        {@const closed = closedAtScheduled(i)}
+        {#if i > 0 && (s.walkMin ?? 0) > 0}
+        <div class="plan-leg"><i class="ti {app.mode === 'transit' && legTransitAvail[i] === false ? 'ti-walk' : modeIcon}"></i> {s.walkMin} min{#if settings.bufferMin > 0} + {settings.bufferMin} buffer{/if}</div>
+        {/if}
+        <div class="plan-step {sc?.conflict ? 'plan-step--conflict' : ''}">
+          <div class="plan-step-time">
+            {#if sc}
+              <span class="plan-step-arr">{fmtClock(sc.arrival)}</span>
+              {#if isStop}<span class="plan-step-dep">{fmtClock(sc.departure)}</span>{/if}
+            {:else}<span class="plan-step-arr">—</span>{/if}
+          </div>
+          <div class="plan-step-rail">
+            <span class="tl-dot {s.kind}" style={isStop ? `background:${catColor(s.poi)}` : ''}>
+              {#if s.kind === 'start'}<i class="ti ti-map-pin-filled"></i>
+              {:else if s.kind === 'end'}<i class="ti ti-flag-filled"></i>
+              {:else}{app.stops.slice(0, i + 1).filter(x => x.kind === 'stop').length}{/if}
+            </span>
+          </div>
+          <div class="plan-step-body">
+            <div class="plan-step-name">{s.name}</div>
+            <div class="plan-step-tags">
+              {#if sc && sc.waitMin > 0}<span class="plan-tag plan-tag--wait">attesa {sc.waitMin}m</span>{/if}
+              {#if sc?.conflict}<span class="plan-tag plan-tag--conflict">⚠ orario non rispettabile</span>{/if}
+              {#if closed}<span class="plan-tag plan-tag--closed">chiuso a quest'ora</span>{/if}
+            </div>
+
+            {#if isStop}
+            <div class="plan-step-controls">
+              <!-- durata -->
+              <div class="tl-stepper">
+                <button class="tl-stepper-btn" onclick={() => changeStopVisit(i, -15)}>−</button>
+                <span class="tl-stepper-val"><i class="ti ti-clock-hour-4"></i> {s.visit}m</span>
+                <button class="tl-stepper-btn" onclick={() => changeStopVisit(i, +15)}>+</button>
+              </div>
+              <!-- orario fisso -->
+              <label class="plan-fixed {s.fixedTime ? 'on' : ''}">
+                <i class="ti ti-pin"></i>
+                {#if s.fixedTime}{s.fixedTime}{:else}fissa orario{/if}
+                <input type="time" value={s.fixedTime ?? ''}
+                       oninput={e => app.setStopFixedTime(i, (e.target as HTMLInputElement).value)} />
+              </label>
+              {#if s.fixedTime}
+              <button class="plan-fixed-clear" aria-label="rimuovi orario fisso"
+                      onclick={() => app.setStopFixedTime(i, '')}><i class="ti ti-x"></i></button>
+              {/if}
+            </div>
+            {/if}
+          </div>
+        </div>
+        {/each}
+      </div>
+
+      <div class="rfoot">
+        {#if app.editingDay}
+        <button class="btn btn-save btn-block" onclick={updateCurrentDay}>
+          <i class="ti ti-device-floppy"></i> Salva orari nel viaggio
+        </button>
+        {:else}
+        <button class="btn btn-primary btn-block" onclick={openSaveSheet}>
+          <i class="ti ti-bookmark"></i> Salva nel viaggio
+        </button>
+        {/if}
+        <button class="btn btn-outline btn-block" onclick={printCurrentItinerary}>
+          <i class="ti ti-file-type-pdf"></i> Esporta questo giorno in PDF
+        </button>
+      </div>
+    </section>
+    {/if}
+
+    <!-- ══════════ SETTINGS (profilo agenzia) ══════════════════ -->
+    {#if app.screen === 'settings'}
+    <section class="screen" in:fly={{ y: 10, duration: 220 }}>
+      <div class="edit-head">
+        <button class="rhead-icon" aria-label="indietro" onclick={() => showScreen('route')}>
+          <i class="ti ti-chevron-left"></i>
+        </button>
+        <span class="edit-title"><i class="ti ti-building-store"></i> Profilo agenzia</span>
+        <button class="edit-close" aria-label="chiudi" onclick={() => showScreen('route')}>
+          <i class="ti ti-x"></i>
+        </button>
+      </div>
+
+      <p class="modal-hint-text">Questi dati appaiono in <strong>copertina e piè di pagina</strong> dei PDF esportati. Salvati solo su questo dispositivo.</p>
+
+      <div class="settings-form">
+        <label class="modal-field">
+          <span>Nome agenzia</span>
+          <input type="text" placeholder="Es. Viaggi del Sole" bind:value={settings.agency.name} oninput={() => settings.save()} />
+        </label>
+
+        <div class="settings-logo-row">
+          <div class="settings-logo-preview">
+            {#if settings.agency.logo}
+            <img src={settings.agency.logo} alt="logo" />
+            {:else}
+            <i class="ti ti-photo"></i>
+            {/if}
+          </div>
+          <div class="settings-logo-actions">
+            <span class="modal-field-lbl">Logo</span>
+            <label class="btn btn-ghost btn-sm-block">
+              <i class="ti ti-upload"></i> Carica immagine
+              <input type="file" accept="image/*" style="display:none"
+                     onchange={onLogoUpload} />
+            </label>
+            {#if settings.agency.logo}
+            <button class="btn btn-ghost btn-sm-block" onclick={() => { settings.agency.logo = ''; settings.save(); }}>
+              <i class="ti ti-trash"></i> Rimuovi
+            </button>
+            {/if}
+          </div>
+        </div>
+
+        <label class="modal-field">
+          <span>Telefono</span>
+          <input type="tel" placeholder="+39 ..." bind:value={settings.agency.phone} oninput={() => settings.save()} />
+        </label>
+        <label class="modal-field">
+          <span>Email</span>
+          <input type="email" placeholder="info@agenzia.it" bind:value={settings.agency.email} oninput={() => settings.save()} />
+        </label>
+        <label class="modal-field">
+          <span>Sito web</span>
+          <input type="text" placeholder="www.agenzia.it" bind:value={settings.agency.website} oninput={() => settings.save()} />
+        </label>
+        <label class="modal-field">
+          <span>Nota / disclaimer (piè di pagina PDF)</span>
+          <textarea rows="3" placeholder="Es. Condizioni, contatti emergenza, P.IVA…"
+                    bind:value={settings.agency.note} oninput={() => settings.save()}></textarea>
+        </label>
+      </div>
+
+      <button class="btn btn-primary btn-block btn-sticky" onclick={() => { settings.save(); showToast('Profilo salvato ✓'); showScreen('route'); }}>
+        <i class="ti ti-check"></i> Salva profilo
       </button>
     </section>
     {/if}
@@ -1579,31 +2396,32 @@
        onclick={e => { if (e.target === e.currentTarget) showSave = false; }}
        onkeydown={e => { if (e.key === 'Escape') showSave = false; }}>
     <div class="modal" role="dialog" aria-modal="true" aria-label="salva nel viaggio" tabindex="-1">
-      <div class="modal-title"><i class="ti ti-bookmark"></i> Salva nel viaggio</div>
+      <div class="modal-title"><i class="ti ti-bookmark"></i> Salva l'itinerario</div>
+      <p class="modal-hint-text">Organizza i tuoi itinerari in <strong>viaggi</strong>. Ogni viaggio raccoglie più giorni di esplorazione.</p>
 
       <label class="modal-field">
-        <span>Viaggio</span>
+        <span>In quale viaggio?</span>
         <select value={saveTripId} onchange={e => onPickTrip((e.target as HTMLSelectElement).value)}>
-          <option value="">➕ Nuovo viaggio…</option>
+          <option value="">➕ Crea nuovo viaggio…</option>
           {#each trips.trips as t}<option value={t.id}>{t.name}</option>{/each}
         </select>
       </label>
 
       {#if !saveTripId}
       <label class="modal-field">
-        <span>Nome viaggio</span>
-        <input type="text" placeholder="Es. Vacanza Roma" bind:value={newTripName} />
+        <span>Nome del viaggio</span>
+        <input type="text" placeholder="Es. Vacanza Roma, Weekend Napoli…" bind:value={newTripName} />
       </label>
       {/if}
 
       <label class="modal-field">
-        <span>Etichetta giorno</span>
-        <input type="text" placeholder="Giorno 1" bind:value={dayLabel} />
+        <span>Nome di questo giorno</span>
+        <input type="text" placeholder="Es. Giorno 1, Centro storico…" bind:value={dayLabel} />
       </label>
 
       <div class="modal-actions">
         <button class="btn btn-ghost" onclick={() => showSave = false}>Annulla</button>
-        <button class="btn btn-primary" onclick={confirmSave}><i class="ti ti-check"></i> Salva</button>
+        <button class="btn btn-primary" onclick={confirmSave}><i class="ti ti-device-floppy"></i> Salva</button>
       </div>
     </div>
   </div>

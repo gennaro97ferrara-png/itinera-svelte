@@ -1,4 +1,12 @@
-import type { POI, Bounds } from '$lib/domain/types';
+import type { POI, Bounds, LatLng } from '$lib/domain/types';
+
+export interface TransitStop {
+  id: string;
+  name: string;
+  type: 'bus' | 'metro' | 'tram' | 'train';
+  lat: number;
+  lng: number;
+}
 
 // Endpoint con fallback: si prova il primo, se fallisce/è lento si passa al successivo
 const ENDPOINTS = [
@@ -418,6 +426,61 @@ export async function fetchPois(
     }
   }
   throw lastErr ?? new Error('Overpass non raggiungibile');
+}
+
+/**
+ * Recupera le fermate di trasporto pubblico (bus, metro, tram, treno) nel
+ * riquadro che contiene tutti i punti della rotta + un padding di ~500m.
+ * Una singola query copre l'intera rotta, senza chiamate per ogni tappa.
+ */
+export async function fetchTransitStopsNearRoute(points: LatLng[]): Promise<TransitStop[]> {
+  if (points.length === 0) return [];
+  const pad = 0.006; // ~600m in gradi lat/lng
+  const lats = points.map(p => p.lat);
+  const lngs = points.map(p => p.lng);
+  const s = Math.min(...lats) - pad, n = Math.max(...lats) + pad;
+  const w = Math.min(...lngs) - pad, e = Math.max(...lngs) + pad;
+  const query = `[out:json][timeout:8];
+(
+  node["highway"="bus_stop"](${s.toFixed(5)},${w.toFixed(5)},${n.toFixed(5)},${e.toFixed(5)});
+  node["railway"="tram_stop"](${s.toFixed(5)},${w.toFixed(5)},${n.toFixed(5)},${e.toFixed(5)});
+  node["railway"="subway_entrance"](${s.toFixed(5)},${w.toFixed(5)},${n.toFixed(5)},${e.toFixed(5)});
+  node["station"="subway"](${s.toFixed(5)},${w.toFixed(5)},${n.toFixed(5)},${e.toFixed(5)});
+  node["railway"="station"](${s.toFixed(5)},${w.toFixed(5)},${n.toFixed(5)},${e.toFixed(5)});
+);
+out tags 300;`;
+
+  for (const endpoint of ENDPOINTS) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), CLIENT_TIMEOUT_MS);
+      try {
+        const resp = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'data=' + encodeURIComponent(query),
+          signal: ctrl.signal,
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const json = await resp.json();
+        return (json.elements ?? []).map((el: any): TransitStop | null => {
+          const lat = el.lat ?? el.center?.lat;
+          const lng = el.lon ?? el.center?.lon;
+          if (lat == null || lng == null) return null;
+          const tags = el.tags ?? {};
+          const type: TransitStop['type'] =
+            tags.railway === 'subway_entrance' || tags.station === 'subway' ? 'metro'
+            : tags.railway === 'tram_stop' ? 'tram'
+            : tags.railway === 'station' ? 'train'
+            : 'bus';
+          return { id: `${el.type}_${el.id}`, name: tags.name ?? (type === 'metro' ? 'Metro' : type === 'tram' ? 'Tram' : type === 'train' ? 'Stazione' : 'Fermata'), type, lat, lng };
+        }).filter(Boolean) as TransitStop[];
+      } finally {
+        clearTimeout(t);
+      }
+    } catch { /* prova prossimo endpoint */ }
+  }
+  return [];
 }
 
 // POI dentro un riquadro disegnato sulla mappa (selezione area).

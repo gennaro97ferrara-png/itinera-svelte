@@ -19,8 +19,14 @@ class AppStore {
   endPoint   = $state<NamedPoint | null>(null);
   loop       = $state(true);
 
+  // orario di partenza pianificato: '' = adesso, altrimenti ISO datetime 'YYYY-MM-DDTHH:mm'
+  departureAt = $state('');
+
   // organizer viaggio: viaggio attualmente aperto nella schermata 'trip'
   currentTripId = $state<string | null>(null);
+
+  // giorno salvato attualmente caricato e in modifica (null = itinerario non ancora salvato)
+  editingDay = $state<{ tripId: string; dayId: string; label: string } | null>(null);
 
   // geolocation
   user = $state<LatLng | null>(null);
@@ -84,6 +90,22 @@ class AppStore {
     if (!s || s.kind !== 'stop') return;
     const next = [...this.stops];
     next[i] = { ...s, mode: s.mode === 'visit' ? 'pass' : 'visit' };
+    this.stops = next;
+  }
+
+  setStopVisit(i: number, minutes: number) {
+    const s = this.stops[i];
+    if (!s || s.kind !== 'stop') return;
+    const next = [...this.stops];
+    next[i] = { ...s, visit: Math.max(5, Math.min(360, Math.round(minutes))) };
+    this.stops = next;
+  }
+
+  setStopFixedTime(i: number, time: string) {
+    const s = this.stops[i];
+    if (!s) return;
+    const next = [...this.stops];
+    next[i] = { ...s, fixedTime: time || undefined };
     this.stops = next;
   }
 

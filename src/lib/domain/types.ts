@@ -38,6 +38,7 @@ export interface Stop {
   mode: 'visit' | 'pass';
   gem: boolean;
   walkMin?: number;
+  fixedTime?: string;   // orario fisso 'HH:mm' (es. prenotazione, apertura) — vincola il programma
 }
 
 export interface LatLng {
@@ -62,7 +63,7 @@ export interface Bounds {
 
 export type TravelMode = 'walk' | 'bike' | 'car' | 'transit';
 
-export type Screen = 'home' | 'route' | 'detail' | 'nav' | 'trips' | 'trip';
+export type Screen = 'home' | 'route' | 'detail' | 'nav' | 'trips' | 'trip' | 'calendar' | 'schedule' | 'settings';
 
 export interface MacroCategory {
   id: string;

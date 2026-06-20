@@ -63,6 +63,24 @@ class TripsStore {
     this.save();
   }
 
+  updateDay(tripId: string, dayId: string, data: Omit<TripDay, 'id' | 'createdAt'>) {
+    this.trips = this.trips.map(t =>
+      t.id === tripId
+        ? { ...t, days: t.days.map(d => d.id === dayId ? { ...d, ...data } : d) }
+        : t
+    );
+    this.save();
+  }
+
+  setDayDate(tripId: string, dayId: string, date: string) {
+    this.trips = this.trips.map(t =>
+      t.id === tripId
+        ? { ...t, days: t.days.map(d => d.id === dayId ? { ...d, date: date || undefined } : d) }
+        : t
+    );
+    this.save();
+  }
+
   renameDay(tripId: string, dayId: string, label: string) {
     this.trips = this.trips.map(t =>
       t.id === tripId
