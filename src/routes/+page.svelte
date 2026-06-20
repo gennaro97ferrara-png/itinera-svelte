@@ -12,30 +12,46 @@
   import { fetchSummary }   from '$lib/services/wikipedia';
   import { fetchPois, fetchPoisInArea } from '$lib/services/overpass';
   import { openStateAt, openLabel } from '$lib/services/openingHours';
+  import { searchPlace } from '$lib/services/geocoding';
+  import type { GeoResult } from '$lib/services/geocoding';
   import type { POI, Stop, Bounds, TravelMode } from '$lib/domain/types';
   import type { TripDay } from '$lib/domain/trips';
+
+  function focusEl(el: HTMLElement) { el.focus(); }
 
   let mapComp: Map;
   let locLabel  = $state('individuo la tua posizione…');
   let showFar   = $state(false);
-  let loading   = $state(true);                  // overlay visibile dal primo paint
-  let now       = $state(new Date());   // per il badge "aperto/chiuso", aggiornato ogni minuto
-  let booted    = false;                          // auto-genera l'itinerario una sola volta al boot
+  let loading   = $state(true);
+  let now       = $state(new Date());
+  let booted    = false;
   let watchId: number | null = null;
 
-  // frasi a rotazione durante il caricamento
-  const LOAD_TIPS = [
-    'Esploro le strade intorno a te…',
-    'Scelgo i posti che valgono una sosta…',
-    'Calcolo i tempi a piedi, tappa per tappa…',
-    'Cerco anche qualche luogo poco conosciuto…',
-    'Compongo il giro perfetto per il tuo tempo…',
-    'Ordino le tappe per camminare di meno…',
+  // ── Ricerca geocoding inline per OD ───────────────────────
+  let odSearchActive = $state<'start' | 'end' | null>(null);
+  let odQuery        = $state('');
+  let odResults      = $state<GeoResult[]>([]);
+  let odSearching    = $state(false);
+  let odDebounce     = 0;
+
+  // ── Replace stop ──────────────────────────────────────────
+  let replacingIdx  = $state<number | null>(null);
+  let replacePool   = $state<POI[]>([]);
+  let lastAllPois   = $state<POI[]>([]);
+
+  // Features showcase durante il caricamento
+  const LOAD_FEATURES = [
+    { icon: 'ti-route', color: '#5B4EE8', title: 'Percorso ottimale', text: 'L\'algoritmo greedy calcola il giro più efficiente minimizzando le camminate e massimizzando le visite nel tuo tempo.' },
+    { icon: 'ti-compass', color: '#9B59B6', title: 'Luoghi nascosti', text: 'La Modalità Esplorazione scopre posti poco conosciuti fuori dai circuiti turistici battuti.' },
+    { icon: 'ti-navigation', color: '#27AE60', title: 'Navigazione live', text: 'Bussola e distanza in tempo reale: segui il percorso tappa per tappa direttamente dalla mappa.' },
+    { icon: 'ti-vector', color: '#E67E22', title: 'Disegna l\'area', text: 'Traccia un riquadro sulla mappa e genera automaticamente l\'itinerario all\'interno della zona scelta.' },
+    { icon: 'ti-luggage', color: '#2980B9', title: 'Organizza il viaggio', text: 'Salva ogni giorno come tappa di un viaggio. Vacanza Roma Giorno 1, 2, 3… tutto in un posto solo.' },
   ];
-  let tipIdx = $state(0);
+  let loadFeatureIdx = $state(0);
+  let loadStep = $state('Individuo la tua posizione…');
   $effect(() => {
     if (!loading) return;
-    const id = setInterval(() => { tipIdx = (tipIdx + 1) % LOAD_TIPS.length; }, 1800);
+    const id = setInterval(() => { loadFeatureIdx = (loadFeatureIdx + 1) % LOAD_FEATURES.length; }, 2400);
     return () => clearInterval(id);
   });
 
@@ -101,11 +117,14 @@
 
     let allPois = POIS;
     loading = true;
+    loadStep = 'Cerco luoghi intorno a te…';
 
     try {
+      loadStep = 'Scarico i punti di interesse…';
       const livePois = await fetchPois(center.lat, center.lng, radius, app.cats);
       if (livePois.length > 0) {
         allPois = livePois;
+        loadStep = `Trovati ${livePois.length} luoghi · calcolo il percorso…`;
       } else {
         showToast('Nessun luogo trovato in zona · uso i dati demo');
       }
@@ -139,6 +158,7 @@
   }
 
   function buildItinerary(allPois: POI[]) {
+    lastAllPois = allPois;
     const stops = generate({
       minutes: app.minutes,
       cats:    app.cats,
@@ -526,6 +546,83 @@
     else showToast('Area annullata');
   }
 
+  // ── OD inline search ──────────────────────────────────────
+  function openOdSearch(which: 'start' | 'end') {
+    odSearchActive = which;
+    odQuery = which === 'start'
+      ? (app.startPoint?.name ?? '')
+      : (app.endPoint?.name ?? '');
+    odResults = [];
+  }
+
+  function closeOdSearch() {
+    odSearchActive = null;
+    odQuery = '';
+    odResults = [];
+    clearTimeout(odDebounce);
+  }
+
+  function onOdQueryInput(q: string) {
+    odQuery = q;
+    clearTimeout(odDebounce);
+    if (q.trim().length < 2) { odResults = []; return; }
+    odSearching = true;
+    odDebounce = setTimeout(async () => {
+      odResults = await searchPlace(q);
+      odSearching = false;
+    }, 350) as unknown as number;
+  }
+
+  function selectGeoResult(r: GeoResult) {
+    const point = { lat: r.lat, lng: r.lng, name: r.name };
+    if (odSearchActive === 'start') {
+      app.startPoint = point;
+    } else {
+      app.endPoint = point;
+      app.roundTrip = false;
+    }
+    closeOdSearch();
+    onGenerate();   // rigenera automaticamente
+  }
+
+  function selectMyLocation() {
+    if (odSearchActive === 'start') app.startPoint = null;
+    else { app.endPoint = null; }
+    closeOdSearch();
+    onGenerate();
+  }
+
+  // ── Replace stop ──────────────────────────────────────────
+  function openReplaceStop(idx: number) {
+    const cur = app.stops[idx];
+    if (!cur || cur.kind !== 'stop') return;
+    const usedIds = new Set(app.stops.map(s => s.poi?.id).filter(Boolean));
+    // alternative POI vicine allo stesso slot, stessa categoria
+    const near = lastAllPois
+      .filter(p => !usedIds.has(p.id))
+      .sort((a, b) => haversine(cur, a) - haversine(cur, b))
+      .slice(0, 12);
+    replacePool = near;
+    replacingIdx = idx;
+  }
+
+  function confirmReplaceStop(poi: POI) {
+    if (replacingIdx === null) return;
+    const s = app.stops[replacingIdx];
+    if (!s) return;
+    const next = [...app.stops];
+    next[replacingIdx] = {
+      ...s,
+      name: poi.name, poi, visit: effVisit(poi),
+      gem: isGem(poi),
+      lat: poi.lat, lng: poi.lng,
+    };
+    app.stops = next;
+    replacingIdx = null;
+    app.focusIdx = -1;
+    prefetchPhotos();
+  }
+
   // ── Anteprima live ────────────────────────────────────────
   let previewTappe = $derived(Math.max(2, Math.min(14, Math.round(app.minutes / 45))));
   let previewKm    = $derived((previewTappe * 0.6).toFixed(1).replace('.', ','));
@@ -791,11 +888,24 @@
         {/if}
       </header>
 
-      <!-- Barra Da → A (sempre visibile, tap per modificare) -->
-      <div class="od-bar">
+      <!-- Barra Da → A con ricerca inline -->
+      <div class="od-bar" class:od-bar--searching={odSearchActive}>
+
+        <!-- Partenza -->
         <div class="od-bar-row">
+          {#if odSearchActive === 'start'}
+          <span class="od-bar-dot od-bar-dot--start"></span>
+          <input class="od-search-input" type="text" placeholder="Cerca partenza…"
+                 value={odQuery}
+                 oninput={e => onOdQueryInput((e.target as HTMLInputElement).value)}
+                 use:focusEl />
+          <button class="od-bar-clear" aria-label="chiudi" onclick={closeOdSearch}>
+            <i class="ti ti-x"></i>
+          </button>
+          {:else}
           <div class="od-bar-point" role="button" tabindex="0"
-               onclick={pickStart} onkeydown={e => e.key === 'Enter' && pickStart()}
+               onclick={() => openOdSearch('start')}
+               onkeydown={e => e.key === 'Enter' && openOdSearch('start')}
                aria-label="modifica partenza">
             <span class="od-bar-dot od-bar-dot--start"></span>
             <div class="od-bar-text">
@@ -808,30 +918,72 @@
             <i class="ti ti-x"></i>
           </button>
           {/if}
+          {/if}
         </div>
 
+        <!-- Risultati ricerca -->
+        {#if odSearchActive}
+        <div class="od-results">
+          <button class="od-result od-result--location" onclick={selectMyLocation}>
+            <i class="ti ti-current-location"></i>
+            <span>La mia posizione attuale</span>
+          </button>
+          {#if odSearching}
+          <div class="od-result od-result--hint"><i class="ti ti-loader-2 spin"></i> Cerco…</div>
+          {:else if odResults.length === 0 && odQuery.length >= 2}
+          <div class="od-result od-result--hint">Nessun risultato</div>
+          {:else}
+          {#each odResults as r}
+          <button class="od-result" onclick={() => selectGeoResult(r)}>
+            <i class="ti ti-map-pin"></i>
+            <div class="od-result-text">
+              <span class="od-result-name">{r.name}</span>
+              <span class="od-result-detail">{r.detail}</span>
+            </div>
+          </button>
+          {/each}
+          {/if}
+        </div>
+        {/if}
+
+        {#if !odSearchActive}
         <div class="od-bar-sep">
           <span class="od-bar-line"></span>
           <i class="ti ti-arrow-down od-bar-arrow"></i>
           <span class="od-bar-line"></span>
         </div>
 
+        <!-- Destinazione -->
         <div class="od-bar-row">
+          {#if odSearchActive === 'end'}
+          <span class="od-bar-dot od-bar-dot--end"></span>
+          <input class="od-search-input" type="text" placeholder="Cerca destinazione…"
+                 value={odQuery}
+                 oninput={e => onOdQueryInput((e.target as HTMLInputElement).value)}
+                 use:focusEl />
+          <button class="od-bar-clear" aria-label="chiudi" onclick={closeOdSearch}>
+            <i class="ti ti-x"></i>
+          </button>
+          {:else}
           <div class="od-bar-point" role="button" tabindex="0"
-               onclick={pickEnd} onkeydown={e => e.key === 'Enter' && pickEnd()}
+               onclick={() => openOdSearch('end')}
+               onkeydown={e => e.key === 'Enter' && openOdSearch('end')}
                aria-label="modifica destinazione">
             <span class="od-bar-dot od-bar-dot--end"></span>
             <div class="od-bar-text">
               <span class="od-bar-label">A</span>
-              <span class="od-bar-val">{app.endPoint?.name ?? 'Tocca per aggiungere destinazione'}</span>
+              <span class="od-bar-val">{app.endPoint?.name ?? 'Aggiungi destinazione…'}</span>
             </div>
           </div>
           {#if app.endPoint}
-          <button class="od-bar-clear" aria-label="rimuovi destinazione" onclick={clearDest}>
+          <button class="od-bar-clear" aria-label="rimuovi destinazione" onclick={() => { clearDest(); onGenerate(); }}>
             <i class="ti ti-x"></i>
           </button>
           {/if}
+          {/if}
         </div>
+        {/if}
+
       </div>
 
       {#if !app.stops.length}
@@ -918,9 +1070,18 @@
               {/if}
             </div>
 
-            <!-- indirizzo: quando la tappa è selezionata -->
-            {#if isStop && i === app.focusIdx && s.poi?.address}
-            <div class="tl-addr"><i class="ti ti-map-pin"></i> {s.poi.address}</div>
+            <!-- azioni tappa selezionata -->
+            {#if isStop && i === app.focusIdx}
+            <div class="tl-stop-actions">
+              {#if s.poi?.address}
+              <span class="tl-addr"><i class="ti ti-map-pin"></i> {s.poi.address}</span>
+              {/if}
+              {#if lastAllPois.length > app.stops.length}
+              <button class="tl-action-btn" onclick={e => { e.stopPropagation(); openReplaceStop(i); }}>
+                <i class="ti ti-refresh"></i> Sostituisci
+              </button>
+              {/if}
+            </div>
             {/if}
           </div>
         </div>
@@ -1226,14 +1387,32 @@
   <!-- ── Loading overlay ───────────────────────────────────── -->
   {#if loading}
   <div class="loading-overlay">
-    <div class="loader-mark">
-      <i class="ti ti-compass"></i>
-      <span class="loader-ring"></span>
+
+    <!-- Feature card rotante -->
+    {#key loadFeatureIdx}
+    {@const f = LOAD_FEATURES[loadFeatureIdx]}
+    <div class="load-feature" in:fly={{ y: 16, duration: 320 }}>
+      <div class="load-feature-icon" style="background:{f.color}1A; color:{f.color}">
+        <i class="ti {f.icon}"></i>
+      </div>
+      <h2 class="load-feature-title">{f.title}</h2>
+      <p class="load-feature-text">{f.text}</p>
     </div>
-    <p class="loading-msg">Preparo il tuo itinerario</p>
-    {#key tipIdx}
-    <p class="loading-sub" in:fly={{ y: 6, duration: 300 }}>{LOAD_TIPS[tipIdx]}</p>
     {/key}
+
+    <!-- Dots indicatori -->
+    <div class="load-dots">
+      {#each LOAD_FEATURES as _, i}
+      <span class="load-dot {i === loadFeatureIdx ? 'on' : ''}"></span>
+      {/each}
+    </div>
+
+    <!-- Spinner + step corrente -->
+    <div class="load-spinner-row">
+      <span class="load-ring"></span>
+      <span class="load-step">{loadStep}</span>
+    </div>
+
   </div>
   {/if}
 
@@ -1269,6 +1448,36 @@
         <button class="btn btn-ghost" onclick={() => showSave = false}>Annulla</button>
         <button class="btn btn-primary" onclick={confirmSave}><i class="ti ti-check"></i> Salva</button>
       </div>
+    </div>
+  </div>
+  {/if}
+
+  <!-- ── Replace stop modal ───────────────────────────────── -->
+  {#if replacingIdx !== null}
+  <div class="modal-backdrop" role="presentation"
+       onclick={() => replacingIdx = null}
+       onkeydown={e => e.key === 'Escape' && (replacingIdx = null)}>
+    <div class="modal" role="dialog" aria-modal="true" aria-label="sostituisci tappa" tabindex="-1"
+         onclick={e => e.stopPropagation()} onkeydown={e => e.stopPropagation()}>
+      <div class="modal-title"><i class="ti ti-refresh"></i> Sostituisci tappa</div>
+      {#if replacePool.length === 0}
+      <p class="modal-hint">Nessuna alternativa disponibile in zona.</p>
+      {:else}
+      <div class="replace-list">
+        {#each replacePool as poi}
+        {@const color = MACRO_COLOR[poi.gem ? 'scoperte' : poi.macro] ?? '#666'}
+        <button class="replace-item" onclick={() => confirmReplaceStop(poi)}>
+          <span class="replace-dot" style="background:{color}"></span>
+          <div class="replace-text">
+            <span class="replace-name">{poi.name}</span>
+            <span class="replace-sub">{catLabel(poi)} · ~{effVisit(poi)} min</span>
+          </div>
+          <i class="ti ti-chevron-right"></i>
+        </button>
+        {/each}
+      </div>
+      {/if}
+      <button class="btn btn-ghost btn-block" style="margin-top:8px" onclick={() => replacingIdx = null}>Annulla</button>
     </div>
   </div>
   {/if}
