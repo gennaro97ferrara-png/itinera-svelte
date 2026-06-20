@@ -1553,7 +1553,7 @@
           <i class="ti ti-adjustments-horizontal"></i>
         </button>
         <div class="rhead-titles">
-          <h1 class="rhead-title"><i class="ti {modeIcon}"></i> {fmtHours(app.minutes)} {modeVerb}</h1>
+          <h1 class="rhead-title"><i class="ti {modeIcon}"></i> {fmtHours(app.minutes)}</h1>
           {#if app.stops.length}
           <p class="rhead-meta">{app.intermediateCount} tappe · {totalKm} km · {fmt(totalVisit)} di visite</p>
           {/if}
