@@ -228,6 +228,13 @@ i.ti { font-size: 1.15em; line-height: 0; vertical-align: -.13em; }
 .empty-state > .ti { font-size: 46px; color: var(--line); margin-bottom: 6px; }
 .empty-title { font-size: 17px; font-weight: 700; margin: 0; }
 .empty-sub { font-size: 13px; color: var(--muted); margin: 0 0 14px; }
+.empty-state-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.empty-state-actions .btn { margin-top: 0; }
 
 /* ════════════════ RESULT (timeline pulita) ═════════════════ */
 .result { padding-top: 4px; }
@@ -592,6 +599,25 @@ i.ti { font-size: 1.15em; line-height: 0; vertical-align: -.13em; }
   .notice { background: #2D1E00; color: #FDE68A; border-color: #4A3000; }
 }
 .notice .ti { color: #D97706; font-size: 18px; margin-top: 1px; flex-shrink: 0; }
+.notice strong { display: block; font-size: 13px; margin-bottom: 2px; }
+.notice p { margin: 0; color: inherit; }
+.notice--warn {
+  background: #FFF7ED;
+  color: #9A3412;
+  border-color: #FDBA74;
+}
+.notice--error {
+  background: #FEF2F2;
+  color: #991B1B;
+  border-color: #FECACA;
+}
+.notice--error .ti { color: #DC2626; }
+.notice--success {
+  background: #ECFDF5;
+  color: #166534;
+  border-color: #BBF7D0;
+}
+.notice--success .ti { color: #16A34A; }
 .link-accent {
   background: none; border: none; color: var(--accent);
   font-weight: 600; cursor: pointer; padding: 4px 0 0;
@@ -1461,6 +1487,18 @@ input[type="range"]::-moz-range-thumb {
 .replace-name { display: block; font-size: 14px; font-weight: 700; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .replace-sub  { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
 .replace-item > .ti { color: var(--line); font-size: 18px; flex-shrink: 0; }
+.quick-add-card { max-width: 560px; }
+.quick-add-section { margin-top: 10px; }
+.quick-add-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.quick-add-chips--sub { gap: 6px; }
+.quick-add-chip {
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink-2);
+  border-radius: 999px; padding: 9px 12px; font: inherit; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: var(--t);
+}
+.quick-add-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.quick-add-chip.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.quick-add-chip--sub { font-size: 12px; padding: 8px 10px; }
 
 /* ── Toast ──────────────────────────────────────────────────── */
 .toast {
@@ -1584,6 +1622,16 @@ input[type="range"]::-moz-range-thumb {
   font-size: 16px; cursor: pointer; transition: var(--t);
   display: flex; align-items: center; justify-content: center;
 }
+.day-card-actions .od-mini {
+  width: 40px;
+  height: 40px;
+  justify-self: center;
+  background: var(--bg);
+}
+.day-card-actions .od-mini .ti,
+.day-card-actions .day-date-picker .ti {
+  font-size: 15px;
+}
 .od-mini:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
 .od-mini:active { transform: scale(.92); }
 .od-mini:disabled { opacity: .35; cursor: default; }
@@ -1615,17 +1663,75 @@ input[type="range"]::-moz-range-thumb {
   font-size: 13px; color: var(--muted); margin-top: 3px; font-weight: 500;
   display: flex; align-items: center; gap: 6px;
 }
+.day-main { gap: 12px; padding: 12px 14px; }
+.day-label { font-size: 15px; }
+.day-meta-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.day-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--ink-2);
+  line-height: 1;
+}
+.day-chip--muted {
+  color: var(--muted);
+  font-weight: 600;
+}
 .trip-main > .ti, .day-main > .ti { color: var(--line); font-size: 20px; flex-shrink: 0; }
 .trip-card-actions, .day-card-actions {
   display: flex; align-items: center; gap: 4px;
   padding: 6px 8px; border-left: 1px solid var(--line); background: var(--surface);
 }
 .trip-card-actions { flex-direction: column; justify-content: center; }
+.day-card-actions {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  align-content: center;
+  min-width: 104px;
+  padding: 8px;
+  background: color-mix(in srgb, var(--surface) 82%, var(--bg));
+}
 .day-num {
   width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
   background: var(--accent); color: var(--on-accent);
   display: flex; align-items: center; justify-content: center;
   font-size: 14px; font-weight: 800;
+}
+.day-date-badge {
+  margin-top: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.2;
+  flex-wrap: wrap;
+}
+.day-date-badge .ti { font-size: 12px; }
+.day-date-time {
+  padding-left: 6px;
+  border-left: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.day-date-picker {
+  width: 40px;
+  height: 40px;
 }
 
 /* ── Modale "salva nel viaggio" ────────────────────────────── */
@@ -2231,3 +2337,4 @@ input[type="range"]::-moz-range-thumb {
   .od-bar-sep { padding: 0 4px; }
   .od-bar-point { padding: 10px 8px; gap: 8px; }
 }
+
