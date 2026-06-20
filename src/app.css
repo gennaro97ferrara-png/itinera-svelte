@@ -428,7 +428,8 @@ i.ti { font-size: 1.15em; line-height: 0; vertical-align: -.13em; }
 .tl-act.danger:hover { background: var(--accent-soft); border-color: var(--red); }
 
 /* footer */
-.rfoot { margin-top: 8px; padding-top: 4px; padding-bottom: env(safe-area-inset-bottom, 0px); }
+.rfoot { margin-top: 16px; padding-top: 4px; padding-bottom: env(safe-area-inset-bottom, 0px); }
+.rfoot > .btn-primary { font-size: 16px; padding: 16px 22px; }
 .rfoot-link {
   display: flex; align-items: center; justify-content: center; gap: 6px;
   width: 100%; margin-top: 12px; padding: 8px;
@@ -437,6 +438,61 @@ i.ti { font-size: 1.15em; line-height: 0; vertical-align: -.13em; }
   transition: color .15s;
 }
 .rfoot-link:hover { color: var(--accent); }
+
+/* ── Selezione durata (bottoni rapidi) ──────────────────────── */
+.duration-row {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;
+}
+.duration-btn {
+  padding: 8px 14px; border-radius: var(--r-lg);
+  border: 1.5px solid var(--line); background: var(--surface);
+  color: var(--ink-2); font-family: inherit; font-size: 13px; font-weight: 700;
+  cursor: pointer; transition: var(--t); white-space: nowrap;
+}
+.duration-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.duration-btn:active { transform: scale(.95); }
+.duration-btn.on {
+  background: var(--accent); color: var(--on-accent);
+  border-color: var(--accent); box-shadow: var(--shadow-blue);
+}
+.duration-btn--custom { color: var(--muted); }
+.duration-btn--custom.on { color: var(--on-accent); }
+.duration-preview {
+  margin-top: 8px; font-size: 12px; color: var(--muted); font-weight: 500;
+}
+
+/* ── Categorie: riga header con expand ──────────────────────── */
+.cat-macro-row {
+  display: flex; align-items: center;
+  border-top: 1px solid var(--line);
+}
+.cat-block:first-child .cat-macro-row { border-top: none; }
+.cat-macro-toggle {
+  flex: 1; display: flex; align-items: center; gap: 10px;
+  background: none; border: none; cursor: pointer; font-family: inherit;
+  padding: 14px 0 14px;
+  min-width: 0;
+}
+.cat-macro-dot {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  border: 2px solid var(--line); background: transparent;
+  transition: var(--t);
+}
+.cat-macro-dot.on {
+  background: var(--cat); border-color: var(--cat);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cat) 20%, transparent);
+}
+.cat-macro-name { font-size: 15px; font-weight: 700; color: var(--ink); flex: 1; text-align: left; }
+.cat-block.on .cat-macro-name { color: var(--cat); }
+.cat-macro-all { font-size: 11px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+.cat-macro-expand {
+  flex-shrink: 0; width: 36px; height: 36px; border-radius: var(--r-sm);
+  background: none; border: none; cursor: pointer;
+  color: var(--muted); font-size: 16px;
+  display: flex; align-items: center; justify-content: center;
+  transition: color .15s;
+}
+.cat-macro-expand:hover { color: var(--accent); background: var(--accent-soft); }
 
 /* ── Preview strip (anteprima compatta) ─────────────────────── */
 .preview-strip {
@@ -1916,6 +1972,233 @@ input[type="range"]::-moz-range-thumb {
   width: 100%; justify-content: flex-start; padding: 9px 14px;
   font-size: 13px; font-weight: 600; cursor: pointer;
 }
+
+/* ── Punteggio qualità itinerario ───────────────────────────── */
+.route-score {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;
+  padding: 12px 14px; border-radius: var(--r-lg); margin: 8px 0 0;
+  background: var(--surface); border: 1px solid var(--line);
+}
+.route-score-left { display: flex; align-items: baseline; gap: 8px; }
+.route-score-num {
+  font-size: 28px; font-weight: 800; letter-spacing: -.02em; line-height: 1;
+}
+.route-score-label { font-size: 12px; font-weight: 700; color: var(--muted); }
+.route-score-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.route-score-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px;
+  background: var(--surface-2); color: var(--muted); border: 1px solid var(--line);
+}
+.route-score-pill .ti { font-size: 12px; }
+.route-score-pill--ok   { color: var(--green); background: #ecf6ec; border-color: #c3e6c4; }
+.route-score-pill--warn { color: var(--red);   background: #fbebe6; border-color: #f2cbbf; }
+.route-score-pill--gem  { color: var(--gem-ink); background: var(--gem-soft); border-color: color-mix(in srgb, var(--gem) 25%, transparent); }
+/* Colori del numero per score */
+.route-score--great .route-score-num  { color: var(--green); }
+.route-score--great .route-score-label { color: var(--green); }
+.route-score--good  .route-score-num  { color: var(--accent); }
+.route-score--good  .route-score-label { color: var(--accent); }
+.route-score--ok    .route-score-num  { color: var(--gem); }
+.route-score--ok    .route-score-label { color: var(--gem); }
+.route-score--warn  .route-score-num  { color: var(--red); }
+.route-score--warn  .route-score-label { color: var(--red); }
+@media (prefers-color-scheme: dark) {
+  .route-score-pill--ok  { background: #112411; border-color: #2a4a24; }
+  .route-score-pill--warn { background: #2a130c; border-color: #5a2a1c; }
+}
+
+/* ── Orario con conflitto ────────────────────────────────────── */
+.tl-clock--conflict {
+  background: color-mix(in srgb, var(--red) 12%, var(--bg));
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 25%, transparent);
+}
+.tl-clock--conflict .ti { color: var(--red); }
+.tl-conflict-detail {
+  display: flex; align-items: center; gap: 5px; margin-top: 4px;
+  font-size: 11.5px; font-weight: 600; color: var(--red);
+  background: color-mix(in srgb, var(--red) 8%, var(--bg));
+  padding: 4px 9px; border-radius: var(--r-sm);
+  border: 1px solid color-mix(in srgb, var(--red) 20%, transparent);
+}
+.tl-conflict-detail .ti { font-size: 12px; flex-shrink: 0; }
+
+/* ── Opzioni avanzate (home) ────────────────────────────────── */
+.advanced-toggle {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px; border-radius: var(--r-lg);
+  border: 1px solid var(--line); background: var(--surface);
+  color: var(--muted); font-family: inherit; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: var(--t); text-align: left;
+}
+.advanced-toggle:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.advanced-toggle .ti:first-child { font-size: 16px; color: var(--accent); }
+.advanced-chev { margin-left: auto; font-size: 14px; transition: transform .2s; }
+.advanced-panel {
+  display: flex; flex-direction: column; gap: 14px;
+  margin-top: 12px; padding: 14px; border-radius: var(--r-lg);
+  background: var(--surface); border: 1px solid var(--line);
+}
+.advanced-item { display: flex; flex-direction: column; gap: 8px; }
+
+/* ── Gem toggle migliorato ──────────────────────────────────── */
+.gem-toggle--on .gem-toggle-sub { color: var(--gem-ink); font-weight: 600; }
+.gem-toggle-pills {
+  display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px;
+}
+.gem-pill {
+  font-size: 11px; font-weight: 700; color: var(--gem-ink);
+  background: color-mix(in srgb, var(--gem) 15%, var(--gem-soft));
+  border: 1px solid color-mix(in srgb, var(--gem) 30%, transparent);
+  padding: 2px 9px; border-radius: 999px; white-space: nowrap;
+}
+
+/* ── Tappa actions: bottone primario ────────────────────────── */
+.tl-action-btn--primary {
+  background: var(--accent); color: var(--on-accent);
+  border-color: var(--accent);
+}
+.tl-action-btn--primary:hover { background: var(--accent-dark); border-color: var(--accent-dark); color: var(--on-accent); }
+
+/* ── Tappa actions: bottone Altro ──────────────────────────── */
+.tl-action-btn--more {
+  border-color: var(--line); background: var(--surface-2); color: var(--muted);
+}
+.tl-action-btn--more:hover { border-color: var(--ink); color: var(--ink); background: var(--surface); }
+
+/* ── Menu secondario tappa ──────────────────────────────────── */
+.tl-more-menu {
+  flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px;
+  padding: 10px 12px; border-radius: var(--r-lg);
+  background: var(--surface); border: 1px solid var(--line);
+  margin-top: 2px;
+  animation: rise .15s var(--ease);
+}
+.tl-more-menu .tl-action-btn {
+  border-color: var(--line); background: var(--bg); color: var(--ink-2);
+}
+.tl-more-menu .tl-action-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.tl-more-menu .tl-fixed { align-self: center; }
+
+/* ── Barra personalizzazione (route screen) ─────────────────── */
+.customize-bar {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 11px 14px; border-radius: var(--r-lg); margin-bottom: 14px;
+  background: var(--surface); border: 1.5px solid var(--accent);
+  cursor: pointer; font-family: inherit; text-align: left;
+  transition: var(--t);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.customize-bar:hover { background: var(--accent-soft); box-shadow: 0 4px 16px color-mix(in srgb, var(--accent) 18%, transparent); }
+.customize-bar:active { transform: scale(.99); }
+.customize-bar-left { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+.customize-bar-icon {
+  font-size: 20px; color: var(--accent); flex-shrink: 0;
+}
+.customize-bar-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.customize-bar-title {
+  font-size: 13px; font-weight: 800; color: var(--accent-ink); letter-spacing: 0;
+}
+.customize-bar-sub {
+  font-size: 11.5px; color: var(--muted); font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.customize-bar-cta {
+  display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0;
+  font-size: 12px; font-weight: 800; color: var(--accent);
+  white-space: nowrap;
+}
+.customize-bar-cta .ti { font-size: 13px; }
+@media (prefers-color-scheme: dark) {
+  .customize-bar { border-color: var(--accent); }
+}
+
+/* ── Trip summary bar ───────────────────────────────────────── */
+.trip-summary-bar {
+  display: flex; align-items: center; gap: 0;
+  padding: 12px 14px; border-radius: var(--r-lg);
+  background: var(--surface); border: 1px solid var(--line);
+  margin-bottom: 16px; box-shadow: var(--shadow-xs);
+}
+.trip-summary-item {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0;
+}
+.trip-summary-item--date {
+  flex: 2; flex-direction: row; gap: 6px; justify-content: center;
+}
+.trip-summary-item--date .ti { font-size: 14px; color: var(--accent); flex-shrink: 0; }
+.trip-summary-num {
+  font-size: 24px; font-weight: 800; color: var(--accent); line-height: 1;
+}
+.trip-summary-lbl { font-size: 11px; font-weight: 600; color: var(--muted); }
+.trip-summary-item--date .trip-summary-lbl { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.trip-summary-sep {
+  width: 1px; height: 32px; background: var(--line); flex-shrink: 0; margin: 0 8px;
+}
+
+/* ── Trips footer: PDF più visibile ─────────────────────────── */
+.trips-footer-row .trips-cal-btn {
+  background: var(--surface); border-color: var(--line); color: var(--accent);
+}
+.trips-footer-row .trips-cal-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+
+/* ── Trip date badge (nella lista viaggi) ───────────────────── */
+.trip-date-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-top: 4px; font-size: 11.5px; font-weight: 600;
+  color: var(--muted);
+}
+.trip-date-badge .ti { font-size: 12px; }
+.trip-chevron { color: var(--line); font-size: 18px; flex-shrink: 0; margin-left: auto; }
+.trip-sub { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.trip-sub .ti { font-size: 13px; color: var(--accent); }
+
+/* ── Day draft badge ────────────────────────────────────────── */
+.day-draft-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-top: 4px; font-size: 11px; font-weight: 600;
+  color: var(--muted); opacity: .7;
+}
+.day-draft-badge .ti { font-size: 11px; }
+
+/* ── Replace modal: miglioramenti ──────────────────────────── */
+.replace-badge {
+  display: inline-flex; align-items: center;
+  font-size: 10px; font-weight: 800; letter-spacing: .03em;
+  background: var(--accent-soft); color: var(--accent-ink);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  padding: 1px 7px; border-radius: 999px; margin-left: 6px;
+  vertical-align: middle;
+}
+.replace-open  { color: var(--green); font-weight: 700; }
+.replace-closed { color: var(--red); font-weight: 700; }
+.replace-chev { color: var(--line); font-size: 16px; flex-shrink: 0; transition: color .15s; }
+.replace-item:hover .replace-chev { color: var(--accent); }
+.replace-empty {
+  text-align: center; padding: 24px 16px;
+  display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--muted);
+}
+.replace-empty .ti { font-size: 36px; color: var(--line); }
+.replace-empty p { font-size: 13px; line-height: 1.5; margin: 0; }
+
+/* ── Gerarchia visiva: sezioni con più respiro ──────────────── */
+.section { margin-top: 28px; }
+.section:first-of-type { margin-top: 20px; }
+
+/* Divider sottile tra sezioni principali */
+.section-divider {
+  height: 1px; background: var(--line); margin: 24px 0; opacity: .5;
+}
+
+/* Titoli sezione più leggibili */
+.label-sm {
+  font-size: 11px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .06em; margin-bottom: 10px; display: block;
+}
+
+/* Empty state più emozionale */
+.empty-state > .btn { margin-top: 8px; }
 
 /* ── Mobile-specific optimizations ─────────────────────────── */
 /* Schermi molto piccoli (< 360px) */

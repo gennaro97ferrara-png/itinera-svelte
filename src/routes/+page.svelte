@@ -77,11 +77,14 @@
   });
 
   // ── Geolocalizzazione ──────────────────────────────────────
+  let locationDenied = $state(false);  // true se l'utente ha negato la posizione
+
   function locate() {
     if (!browser || !navigator.geolocation) {
       locLabel = 'posizione non disponibile · uso Roma';
       app.user = ROME;
-      autoGenerateOnce();
+      locationDenied = true;
+      autoGenerateOnce(false);
       return;
     }
     navigator.geolocation.getCurrentPosition(
@@ -90,7 +93,7 @@
         locLabel = `posizione attuale · ±${Math.round(pos.coords.accuracy)} m`;
         app.user = c;
         showFar = haversine(c, ROME) > 100_000;
-        autoGenerateOnce();
+        autoGenerateOnce(true);  // posizione disponibile → genera subito
         watchId = navigator.geolocation.watchPosition(
           p => { if (!app.demo) app.user = { lat: p.coords.latitude, lng: p.coords.longitude }; },
           () => {},
@@ -100,18 +103,24 @@
       () => {
         locLabel = 'posizione negata · uso Roma';
         app.user = ROME;
-        autoGenerateOnce();
+        locationDenied = true;
+        autoGenerateOnce(false);  // posizione negata → mostra empty state
       },
       { enableHighAccuracy: true, timeout: 8000 }
     );
   }
 
-  // Show first: appena ho la posizione genero subito un itinerario sui default.
-  function autoGenerateOnce() {
+  // Se la posizione è disponibile genera subito l'itinerario, altrimenti mostra la route vuota
+  function autoGenerateOnce(hasLocation: boolean) {
     if (booted) return;
     booted = true;
-    loading = false;
-    if (!app.stops.length) showScreen('home');
+    if (hasLocation && !app.stops.length && app.cats.length > 0) {
+      // genera automaticamente con le impostazioni di default
+      onGenerate();
+    } else {
+      loading = false;
+      showScreen('route');
+    }
   }
 
   function setDemo() {
@@ -265,6 +274,7 @@
       if (s.poi) openDetail(s.poi);
     } else {
       app.focusIdx = i;
+      stopMoreIdx = null;  // chiude menu secondario al cambio selezione
     }
   }
 
@@ -507,31 +517,36 @@
     const s = poi.sub ?? [];
     if (s.includes('panorami')) return 'Selezionato per la vista panoramica lungo il percorso.';
     if (s.includes('musei'))    return 'Tappa culturale di rilievo nella tua zona.';
-    if (s.includes('arte'))     return 'Opera d’arte incontrata lungo il cammino.';
+    if (s.includes('arte'))     return "Opera d'arte incontrata lungo il cammino.";
     if (s.includes('chiese'))   return 'Luogo di culto storico vicino al tuo itinerario.';
     if (s.some(x => ['ristoranti','pizza','panini','gelati','street','caffe'].includes(x)))
       return 'Pausa gastronomica comoda lungo il giro.';
     if (s.includes('parchi'))   return 'Spazio verde per una sosta rilassante.';
-    return 'Punto d’interesse vicino e raggiungibile a piedi.';
+    return "Punto d'interesse vicino e raggiungibile.";
   }
 
-  // tappa col punteggio più alto → "consigliata" (stellina nella timeline)
+  // Motivo contestuale con categorie e distanza
   function shortReason(s: Stop, oh: string): string {
     const poi = s.poi;
     if (!poi) return '';
-    if (oh === 'open') return 'Aperto ora e compatibile con il tuo tempo.';
-    if (oh === 'closed') return 'Chiuso ora: puoi tenerlo come passaggio o sostituirlo.';
     const subs = poi.sub ?? [];
-    if (poi.gem) return 'Scelto per aggiungere una scoperta meno turistica.';
-    if (subs.some(x => ['ristoranti','pizza','panini','gelati','street','caffe'].includes(x))) {
-      return 'Pausa cibo comoda lungo il giro.';
-    }
-    if (subs.includes('panorami')) return 'Vista panoramica lungo il percorso.';
-    if (subs.includes('musei') || subs.includes('monumenti') || subs.includes('storico')) {
-      return 'Tappa culturale rilevante e raggiungibile.';
-    }
-    if ((s.walkMin ?? 0) <= 8) return 'Scelto perche vicino alla tappa precedente.';
-    return 'Scelto per bilanciare interesse e distanza.';
+    const catNames: string[] = [];
+    if (subs.includes('musei'))       catNames.push('Musei');
+    if (subs.includes('monumenti'))   catNames.push('Monumenti');
+    if (subs.includes('chiese'))      catNames.push('Chiese');
+    if (subs.includes('storico'))     catNames.push('Storia');
+    if (subs.includes('arte'))        catNames.push('Arte');
+    if (subs.includes('parchi'))      catNames.push('Parchi');
+    if (subs.includes('panorami'))    catNames.push('Panorami');
+    if (subs.some(x => ['ristoranti','pizza','panini','gelati','street','caffe'].includes(x))) catNames.push('Cibo');
+    const catStr = catNames.length ? `coerente con ${catNames.slice(0, 2).join(' + ')}` : '';
+    const near   = (s.walkMin ?? 0) <= 6 ? 'a pochi passi dalla tappa precedente' : '';
+    const openNow = oh === 'open' ? 'aperto ora' : '';
+    if (poi.gem) return `Modalità Esplorazione${catStr ? ' · ' + catStr : ''}.`;
+    if (oh === 'closed') return `Chiuso ora: consideralo tappa intermedia o sostituiscilo${catStr ? ' · ' + catStr : ''}.`;
+    const parts = [near, openNow, catStr].filter(Boolean);
+    if (!parts.length) return 'Scelto per bilanciare interesse e distanza.';
+    return (parts.slice(0, 2).join(', ').replace(/^./, c => c.toUpperCase())) + '.';
   }
 
   let heroIdx = $derived(
@@ -540,6 +555,37 @@
       .filter(x => x.isStop)
       .sort((a, b) => b.score - a.score)[0]?.i ?? -1
   );
+
+  // ── Punteggio qualità itinerario ──────────────────────────
+  let routeScore = $derived.by(() => {
+    if (!app.stops.length) return null;
+    const stops = app.stops.filter(s => s.kind === 'stop');
+    if (!stops.length) return null;
+    let score = 100;
+    // Penalità per conflitti orari
+    if (scheduleConflicts > 0) score -= scheduleConflicts * 12;
+    // Bonus tappe aperte
+    const openCount = stops.filter(s => s.poi?.openingHours && openStateAt(s.poi.openingHours, now) === 'open').length;
+    const withHours = stops.filter(s => s.poi?.openingHours).length;
+    if (withHours > 0 && openCount === withHours) score += 8;
+    // Penalità per troppe tappe chiuse
+    const closedCount = stops.filter(s => s.poi?.openingHours && openStateAt(s.poi.openingHours, now) === 'closed').length;
+    score -= closedCount * 6;
+    // Bonus distanza media bassa
+    const avgWalk = totalWalk / Math.max(stops.length, 1);
+    if (avgWalk <= 8)  score += 5;
+    if (avgWalk >= 20) score -= 8;
+    // Bonus gem
+    if (app.stops.some(s => s.gem)) score += 4;
+    return Math.max(40, Math.min(99, Math.round(score)));
+  });
+
+  function scoreLabel(s: number): { text: string; cls: string } {
+    if (s >= 90) return { text: 'Ottimizzato', cls: 'score--great' };
+    if (s >= 75) return { text: 'Buono', cls: 'score--good' };
+    if (s >= 60) return { text: 'Accettabile', cls: 'score--ok' };
+    return { text: 'Da rivedere', cls: 'score--warn' };
+  }
 
   // ── Google Maps deep-link ──────────────────────────────────
   function openMaps() {
@@ -816,6 +862,17 @@
   let previewTappe = $derived(Math.max(2, Math.min(14, Math.round(app.minutes / 45))));
   let previewKm    = $derived((previewTappe * 0.6).toFixed(1).replace('.', ','));
   let localGems    = $derived(POIS.filter(p => p.gem).length);
+
+  // ── Menu secondario tappa selezionata ─────────────────────
+  let stopMoreIdx = $state<number | null>(null);
+
+  // ── Categorie: quali macro sono espanse ────────────────────
+  let expandedCats = $state<Set<string>>(new Set());
+  function toggleCatExpand(id: string) {
+    const next = new Set(expandedCats);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    expandedCats = next;
+  }
 
   // ── Organizer viaggio ─────────────────────────────────────
   let showSave    = $state(false);     // modale "salva nel viaggio"
@@ -1441,6 +1498,7 @@
              oninput={e => app.minutes = +(e.target as HTMLInputElement).value} />
       <div class="slider-endpoints"><span>30 min</span><span>12 ore</span></div>
 
+      <!-- STEP 1: Preset esperienza -->
       <div class="section">
         <div class="preset-head">
           <div class="label-sm">Che giro vuoi fare?</div>
@@ -1456,7 +1514,7 @@
         </div>
       </div>
 
-      <!-- Mezzo di trasporto -->
+      <!-- STEP 2: Mezzo di trasporto -->
       <div class="section">
         <div class="label-sm">Come ti sposti</div>
         <div class="modes">
@@ -1470,16 +1528,7 @@
         </div>
       </div>
 
-      <!-- Orario di partenza -->
-      <div class="section">
-        <div class="label-sm">Quando parti?</div>
-        <DepartureEditor />
-        {#if app.departureAt && app.mode === 'transit'}
-        <p class="dep-hint dep-hint--transit"><i class="ti ti-info-circle"></i> Con i mezzi gli orari sono stime. Verifica sempre in app.</p>
-        {/if}
-      </div>
-
-      <!-- Interessi: macro → micro -->
+      <!-- STEP 3: Interessi macro → micro -->
       <div class="section">
         <div class="label-sm">Cosa ti interessa</div>
         <div class="cats">
@@ -1503,37 +1552,37 @@
         </div>
       </div>
 
-      <!-- Modalità Esplorazione -->
+      <!-- STEP 4: Modalità Esplorazione — valorizzata -->
       {#each MACROS.filter(m => m.gem) as m}
       {@const gemOn = app.macroActive(m.id, [])}
-      <button class="gem-toggle" role="switch"
+      <button class="gem-toggle {gemOn ? 'gem-toggle--on' : ''}" role="switch"
               aria-checked={String(gemOn) as 'true'|'false'}
               onclick={() => toggleMacro(m)}>
         <div class="gem-toggle-body">
           <span class="gem-toggle-icon"><i class="ti ti-compass"></i></span>
           <div>
             <div class="gem-toggle-title">Modalità Esplorazione</div>
-            <div class="gem-toggle-sub">Luoghi poco conosciuti e storie nascoste</div>
+            <div class="gem-toggle-sub">
+              {#if gemOn}
+                Meno tappe turistiche, più locali e storie insolite 🧭
+              {:else}
+                Scopri luoghi nascosti e percorsi fuori dal comune
+              {/if}
+            </div>
+            {#if gemOn}
+            <div class="gem-toggle-pills">
+              <span class="gem-pill">meno turistico</span>
+              <span class="gem-pill">più locale</span>
+              <span class="gem-pill">storie curiose</span>
+              <span class="gem-pill">deviazioni insolite</span>
+            </div>
+            {/if}
           </div>
         </div>
         <div class="switch"><div class="knob"></div></div>
       </button>
       {/each}
 
-      <!-- Ritorna al punto di partenza -->
-      <div class="section">
-        <button class="switch-row"
-                role="switch"
-                aria-checked={String(app.roundTrip) as 'true'|'false'}
-                class:disabled={hasDest}
-                onclick={() => {
-                  if (hasDest) { showToast('Hai scelto una destinazione: il giro è andata sola'); return; }
-                  app.roundTrip = !app.roundTrip;
-                }}>
-          <span class="sw-label"><i class="ti ti-arrow-back-up"></i> Ritorna al punto di partenza</span>
-          <span class="switch"><span class="knob"></span></span>
-        </button>
-      </div>
 
       <!-- Generate / Update -->
       <button class="btn btn-primary btn-block btn-sticky" onclick={onGenerate}>
@@ -1549,9 +1598,6 @@
 
       <!-- Header: una riga, niente box -->
       <header class="rhead">
-        <button class="rhead-icon" aria-label="modifica" onclick={() => showScreen('home')}>
-          <i class="ti ti-adjustments-horizontal"></i>
-        </button>
         <div class="rhead-titles">
           <h1 class="rhead-title"><i class="ti {modeIcon}"></i> {fmtHours(app.minutes)}</h1>
           {#if app.stops.length}
@@ -1571,6 +1617,22 @@
         </button>
         {/if}
       </header>
+
+      <!-- Barra personalizzazione — invita a modificare tutto -->
+      <button class="customize-bar" onclick={() => showScreen('home')} aria-label="personalizza itinerario">
+        <div class="customize-bar-left">
+          <i class="ti ti-adjustments-horizontal customize-bar-icon"></i>
+          <div class="customize-bar-text">
+            <span class="customize-bar-title">Personalizza l'itinerario</span>
+            <span class="customize-bar-sub">
+              {fmtHours(app.minutes)} · {modeInfo().label}
+              {#if app.cats.length > 0} · {app.cats.length} {app.cats.length === 1 ? 'categoria' : 'categorie'}{/if}
+              {#if app.hasCat('scoperte')} · Esplorazione attiva{/if}
+            </span>
+          </div>
+        </div>
+        <span class="customize-bar-cta">Modifica <i class="ti ti-chevron-right"></i></span>
+      </button>
 
       <!-- Banner "stai modificando" -->
       {#if app.editingDay && app.stops.length}
@@ -1657,14 +1719,20 @@
       {/if}
 
       {#if !app.stops.length}
-      <!-- Empty state -->
+      <!-- Empty state: diverso se posizione negata o in attesa -->
       <div class="empty-state">
-        <i class="ti ti-route-off"></i>
-        <p class="empty-title">Nessun itinerario per ora</p>
-        <p class="empty-sub">Allarga il tempo o cambia gli interessi e riprova.</p>
-        <button class="btn btn-primary" onclick={() => showScreen('home')}>
-          <i class="ti ti-adjustments-horizontal"></i> Modifica preferenze
-        </button>
+        {#if locationDenied}
+          <i class="ti ti-map-pin-off"></i>
+          <p class="empty-title">Posizione non disponibile</p>
+          <p class="empty-sub">Attiva la posizione oppure personalizza l'itinerario scegliendo durata, interessi e mezzo di trasporto.</p>
+          <button class="btn btn-primary" onclick={() => showScreen('home')}>
+            <i class="ti ti-adjustments-horizontal"></i> Personalizza itinerario
+          </button>
+        {:else}
+          <i class="ti ti-route"></i>
+          <p class="empty-title">Sto preparando il tuo itinerario…</p>
+          <p class="empty-sub">Ricevo la posizione e cerco i luoghi più interessanti vicino a te.</p>
+        {/if}
       </div>
       {:else}
 
@@ -1752,8 +1820,8 @@
                   {/if}
                 </div>
                 {#if schedule?.[i]}
-                <div class="tl-clock">
-                  <i class="ti ti-clock"></i>
+                <div class="tl-clock {schedule[i].conflict ? 'tl-clock--conflict' : ''}">
+                  <i class="ti {schedule[i].conflict ? 'ti-alert-triangle' : 'ti-clock'}"></i>
                   {#if s.kind === 'start'}
                     {fmtClock(schedule[i].arrival)}
                   {:else if isStop}
@@ -1762,6 +1830,12 @@
                     arrivo {fmtClock(schedule[i].arrival)}
                   {/if}
                 </div>
+                {#if schedule[i].conflict && isStop && s.poi?.openingHours}
+                <div class="tl-conflict-detail">
+                  <i class="ti ti-alert-circle"></i>
+                  Arrivo previsto {fmtClock(schedule[i].arrival)} · verifica gli orari
+                </div>
+                {/if}
                 {/if}
                 {#if reason}
                 <div class="tl-reason">{reason}</div>
@@ -1780,6 +1854,14 @@
             <!-- azioni tappa selezionata -->
             {#if isStop && i === app.focusIdx}
             <div class="tl-stop-actions">
+
+              <!-- AZIONI PRIMARIE -->
+              {#if s.poi}
+              <button class="tl-action-btn tl-action-btn--primary" onclick={e => { e.stopPropagation(); s.poi && openDetail(s.poi); }}>
+                <i class="ti ti-info-circle"></i> Dettagli
+              </button>
+              {/if}
+
               <!-- Stepper durata sosta (solo per le tappe da visitare) -->
               {#if s.mode !== 'pass'}
               <div class="tl-stepper">
@@ -1788,57 +1870,91 @@
                 <button class="tl-stepper-btn" onclick={e => { e.stopPropagation(); changeStopVisit(i, +15); }}>+</button>
               </div>
               {:else}
-              <span class="tl-pass-note"><i class="ti ti-eye"></i> Solo passaggio · 1 min</span>
+              <span class="tl-pass-note"><i class="ti ti-route"></i> Tappa intermedia · 1 min</span>
               {/if}
 
-              <!-- Orario fisso (prenotazione/apertura) — solo con partenza impostata -->
-              {#if app.departureAt}
-              <label class="tl-fixed {s.fixedTime ? 'on' : ''}">
-                <i class="ti ti-pin"></i>
-                {s.fixedTime ? s.fixedTime : 'fissa orario'}
-                <input type="time" value={s.fixedTime ?? ''}
-                       onclick={e => e.stopPropagation()}
-                       oninput={e => { e.stopPropagation(); app.setStopFixedTime(i, (e.target as HTMLInputElement).value); }} />
-              </label>
-              {#if s.fixedTime}
-              <button class="tl-action-btn" onclick={e => { e.stopPropagation(); app.setStopFixedTime(i, ''); }}>
-                <i class="ti ti-x"></i> Libera orario
-              </button>
-              {/if}
-              {/if}
-
-              {#if s.poi?.address}
-              <span class="tl-addr"><i class="ti ti-map-pin"></i> {s.poi.address}</span>
-              {/if}
-              {#if s.poi}
-              <button class="tl-action-btn" onclick={e => { e.stopPropagation(); s.poi && openDetail(s.poi); }}>
-                <i class="ti ti-info-circle"></i> Dettagli
-              </button>
-              {/if}
               {#if lastAllPois.length > app.stops.length}
               <button class="tl-action-btn" onclick={e => { e.stopPropagation(); openReplaceStop(i); }}>
                 <i class="ti ti-refresh"></i> Sostituisci
               </button>
               {/if}
-              <button class="tl-action-btn" onclick={e => { e.stopPropagation(); toggleStopMode(i); }}>
-                <i class="ti {s.mode === 'pass' ? 'ti-eye' : 'ti-route'}"></i>
-                {s.mode === 'pass' ? 'Visita' : 'Passaggio'}
-              </button>
-              <button class="tl-action-btn" onclick={e => { e.stopPropagation(); useStopAsStart(s); }}>
-                <i class="ti ti-player-play"></i> Partenza
-              </button>
-              <button class="tl-action-btn" onclick={e => { e.stopPropagation(); useStopAsEnd(s); }}>
-                <i class="ti ti-flag"></i> Arrivo
-              </button>
+
               <button class="tl-action-btn danger" onclick={e => { e.stopPropagation(); removeStop(i); }}>
                 <i class="ti ti-x"></i> Salta
               </button>
+
+              <!-- Bottone Altro (menu secondario) -->
+              <button class="tl-action-btn tl-action-btn--more"
+                      onclick={e => { e.stopPropagation(); stopMoreIdx = stopMoreIdx === i ? null : i; }}>
+                <i class="ti ti-dots"></i> Altro
+              </button>
+
+              <!-- MENU SECONDARIO -->
+              {#if stopMoreIdx === i}
+              <div class="tl-more-menu">
+                {#if s.poi?.address}
+                <span class="tl-addr"><i class="ti ti-map-pin"></i> {s.poi.address}</span>
+                {/if}
+
+                <!-- Fissa orario (solo con partenza impostata) -->
+                {#if app.departureAt}
+                <label class="tl-fixed {s.fixedTime ? 'on' : ''}">
+                  <i class="ti ti-pin"></i>
+                  {s.fixedTime ? `Orario fisso: ${s.fixedTime}` : 'Fissa orario'}
+                  <input type="time" value={s.fixedTime ?? ''}
+                         onclick={e => e.stopPropagation()}
+                         oninput={e => { e.stopPropagation(); app.setStopFixedTime(i, (e.target as HTMLInputElement).value); }} />
+                </label>
+                {#if s.fixedTime}
+                <button class="tl-action-btn" onclick={e => { e.stopPropagation(); app.setStopFixedTime(i, ''); }}>
+                  <i class="ti ti-x"></i> Rimuovi orario fisso
+                </button>
+                {/if}
+                {/if}
+
+                <button class="tl-action-btn" onclick={e => { e.stopPropagation(); toggleStopMode(i); }}>
+                  <i class="ti {s.mode === 'pass' ? 'ti-eye' : 'ti-route'}"></i>
+                  {s.mode === 'pass' ? 'Converti in visita' : 'Imposta come tappa intermedia'}
+                </button>
+                <button class="tl-action-btn" onclick={e => { e.stopPropagation(); useStopAsStart(s); }}>
+                  <i class="ti ti-player-play"></i> Imposta come partenza
+                </button>
+                <button class="tl-action-btn" onclick={e => { e.stopPropagation(); useStopAsEnd(s); }}>
+                  <i class="ti ti-flag"></i> Imposta come arrivo
+                </button>
+              </div>
+              {/if}
+
             </div>
             {/if}
           </div>
         </div>
         {/each}
       </div>
+
+      <!-- Punteggio qualità itinerario -->
+      {#if routeScore !== null}
+      {@const sl = scoreLabel(routeScore)}
+      <div class="route-score {sl.cls}">
+        <div class="route-score-left">
+          <span class="route-score-num">{routeScore}</span>
+          <span class="route-score-label">{sl.text}</span>
+        </div>
+        <div class="route-score-pills">
+          <span class="route-score-pill"><i class="ti ti-route"></i> {totalKm} km</span>
+          {#if scheduleConflicts > 0}
+          <span class="route-score-pill route-score-pill--warn">
+            <i class="ti ti-alert-triangle"></i> {scheduleConflicts} {scheduleConflicts === 1 ? 'conflitto' : 'conflitti'}
+          </span>
+          {:else if app.departureAt}
+          <span class="route-score-pill route-score-pill--ok"><i class="ti ti-check"></i> Nessun conflitto</span>
+          {/if}
+          {#if app.stops.some(s => s.gem)}
+          <span class="route-score-pill route-score-pill--gem"><i class="ti ti-compass"></i> Luogo nascosto</span>
+          {/if}
+        </div>
+      </div>
+      {/if}
 
       <!-- Primary action -->
       <div class="rfoot">
@@ -1856,7 +1972,7 @@
           </button>
           {:else}
           <button class="btn btn-outline btn-block" onclick={openSaveSheet}>
-            <i class="ti ti-bookmark"></i> Salva nel viaggio
+            <i class="ti ti-bookmark"></i> Aggiungi a un viaggio
           </button>
           {/if}
           <button class="btn btn-ghost btn-block" onclick={printCurrentItinerary}>
@@ -2064,19 +2180,35 @@
       <div class="empty-state">
         <i class="ti ti-luggage"></i>
         <p class="empty-title">Nessun viaggio salvato</p>
-        <p class="empty-sub">Crea un viaggio e salva i tuoi itinerari giorno per giorno.</p>
+        <p class="empty-sub">Genera un itinerario e salvalo con "Aggiungi a un viaggio" per iniziare.</p>
+        <button class="btn btn-primary" onclick={() => showScreen('route')}>
+          <i class="ti ti-map-route"></i> Vai all'itinerario
+        </button>
       </div>
       {:else}
       <div class="trip-list">
         {#each trips.trips as t}
+        {@const totalStopsT = t.days.reduce((a, d) => a + d.stops.filter(s => s.kind === 'stop').length, 0)}
+        {@const datesT = t.days.map(d => d.date ?? d.departureAt?.slice(0,10)).filter(Boolean).sort() as string[]}
+        {@const dateRangeT = datesT.length
+          ? (datesT[0] === datesT[datesT.length - 1]
+              ? new Date(datesT[0] + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' })
+              : new Date(datesT[0] + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }) + ' – ' + new Date(datesT[datesT.length-1] + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' }))
+          : ''}
         <div class="trip-card">
           <button class="trip-main" onclick={() => openTrip(t.id)}>
             <span class="trip-emoji">🧳</span>
             <div class="trip-text">
               <div class="trip-name">{t.name}</div>
-              <div class="trip-sub">{t.days.length} {t.days.length === 1 ? 'giorno' : 'giorni'}</div>
+              <div class="trip-sub">
+                <span><i class="ti ti-calendar"></i> {t.days.length} {t.days.length === 1 ? 'giorno' : 'giorni'}</span>
+                {#if totalStopsT > 0}<span>· {totalStopsT} tappe</span>{/if}
+              </div>
+              {#if dateRangeT}
+              <div class="trip-date-badge"><i class="ti ti-calendar-event"></i> {dateRangeT}</div>
+              {/if}
             </div>
-            <i class="ti ti-chevron-right"></i>
+            <i class="ti ti-chevron-right trip-chevron"></i>
           </button>
           <div class="trip-card-actions">
             <button class="od-mini" aria-label="rinomina" onclick={() => renameTripPrompt(t.id, t.name)}><i class="ti ti-pencil"></i></button>
@@ -2098,7 +2230,7 @@
     </section>
     {/if}
 
-    <!-- ══════════ TRIP (giorni del viaggio) ════════════════════ -->
+    <!-- ═════��════ TRIP (giorni del viaggio) ════════════════════ -->
     {#if app.screen === 'trip' && currentTrip}
     {@const trip = currentTrip}
     <section class="screen" in:fly={{ y: 10, duration: 220 }}>
@@ -2112,15 +2244,48 @@
         </button>
       </div>
 
+      <!-- Sommario viaggio -->
+      {#if trip.days.length > 0}
+      {@const tripTotalStops = trip.days.reduce((a, d) => a + d.stops.filter(s => s.kind === 'stop').length, 0)}
+      {@const tripDates = trip.days.map(d => d.date ?? d.departureAt?.slice(0,10)).filter(Boolean).sort() as string[]}
+      <div class="trip-summary-bar">
+        <div class="trip-summary-item">
+          <span class="trip-summary-num">{trip.days.length}</span>
+          <span class="trip-summary-lbl">{trip.days.length === 1 ? 'giorno' : 'giorni'}</span>
+        </div>
+        <div class="trip-summary-sep"></div>
+        <div class="trip-summary-item">
+          <span class="trip-summary-num">{tripTotalStops}</span>
+          <span class="trip-summary-lbl">tappe</span>
+        </div>
+        {#if tripDates.length}
+        <div class="trip-summary-sep"></div>
+        <div class="trip-summary-item trip-summary-item--date">
+          <i class="ti ti-calendar-event"></i>
+          <span class="trip-summary-lbl">
+            {new Date(tripDates[0] + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })}
+            {#if tripDates.length > 1} – {new Date(tripDates[tripDates.length-1] + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' })}{/if}
+          </span>
+        </div>
+        {/if}
+      </div>
+      {/if}
+
       {#if trip.days.length === 0}
       <div class="empty-state">
-        <i class="ti ti-calendar"></i>
+        <i class="ti ti-calendar-plus"></i>
         <p class="empty-title">Ancora nessun giorno</p>
-        <p class="empty-sub">Apri un itinerario e usa "Salva nel viaggio" per aggiungere un giorno.</p>
+        <p class="empty-sub">Genera un itinerario e usa "Aggiungi a un viaggio" per salvarlo qui.</p>
+        <button class="btn btn-primary" onclick={() => { app.currentTripId = trip.id; showScreen('home'); }}>
+          <i class="ti ti-plus"></i> Crea il primo giorno
+        </button>
       </div>
       {:else}
       <div class="day-list">
         {#each trip.days as d, i}
+        {@const dayStops = d.stops.filter(s => s.kind === 'stop').length}
+        {@const dayKm = routeDistanceKm(d.stops, d.mode).toFixed(1).replace('.',',')}
+        {@const hasDate = !!(d.date || d.departureAt)}
         <div class="day-card">
           <button class="day-main" onclick={() => loadDay(d, trip.id)}>
             <span class="day-num">{i + 1}</span>
@@ -2128,9 +2293,9 @@
               <div class="day-label">{d.label}</div>
               <div class="day-sub">
                 <i class="ti {modeInfo(d.mode).icon}"></i>
-                {d.stops.filter(s => s.kind === 'stop').length} tappe · {fmtHours(d.minutes)}
+                {dayStops} {dayStops === 1 ? 'tappa' : 'tappe'} · {fmtHours(d.minutes)} · {dayKm} km
               </div>
-              {#if d.date || d.departureAt}
+              {#if hasDate}
               <div class="day-date-badge">
                 <i class="ti ti-calendar"></i>
                 {#if d.date}
@@ -2139,12 +2304,14 @@
                   {new Date(d.departureAt).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' })}
                 {/if}
                 {#if d.departureAt}
-                  · {new Date(d.departureAt).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}
+                  · partenza {new Date(d.departureAt).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}
                 {/if}
               </div>
+              {:else}
+              <div class="day-draft-badge"><i class="ti ti-pencil"></i> bozza · nessuna data</div>
               {/if}
             </div>
-            <span class="day-edit-hint"><i class="ti ti-pencil"></i> Modifica</span>
+            <span class="day-edit-hint"><i class="ti ti-pencil"></i> Apri</span>
           </button>
           <div class="day-card-actions">
             <!-- Date picker per il calendario -->
@@ -2178,7 +2345,7 @@
     </section>
     {/if}
 
-    <!-- ══════════ CALENDAR ════════════════════════════════════ -->
+    <!-- ════════��═ CALENDAR ════════════════════════════════════ -->
     {#if app.screen === 'calendar'}
     <section class="screen" in:fly={{ y: 10, duration: 220 }}>
       <div class="edit-head">
@@ -2416,25 +2583,44 @@
 
   <!-- ── Replace stop modal ───────────────────────────────── -->
   {#if replacingIdx !== null}
+  {@const replacingStop = replacingIdx !== null ? app.stops[replacingIdx] : null}
   <div class="modal-backdrop" role="presentation"
        onclick={() => replacingIdx = null}
        onkeydown={e => e.key === 'Escape' && (replacingIdx = null)}>
     <div class="modal" role="dialog" aria-modal="true" aria-label="sostituisci tappa" tabindex="-1"
          onclick={e => e.stopPropagation()} onkeydown={e => e.stopPropagation()}>
-      <div class="modal-title"><i class="ti ti-refresh"></i> Sostituisci tappa</div>
+      <div class="modal-title"><i class="ti ti-refresh"></i> Scegli un'alternativa</div>
+      {#if replacingStop}
+      <p class="modal-hint-text">Stai sostituendo <strong>{replacingStop.name}</strong>. Scegli il luogo più adatto.</p>
+      {/if}
       {#if replacePool.length === 0}
-      <p class="modal-hint">Nessuna alternativa disponibile in zona.</p>
+      <div class="replace-empty">
+        <i class="ti ti-map-search"></i>
+        <p>Nessuna alternativa disponibile in questa zona.<br>Prova ad allargare l'area o cambia le categorie.</p>
+      </div>
       {:else}
       <div class="replace-list">
-        {#each replacePool as poi}
+        {#each replacePool as poi, ri}
         {@const color = MACRO_COLOR[poi.gem ? 'scoperte' : poi.macro] ?? '#666'}
+        {@const distM = replacingStop ? Math.round(haversine(replacingStop, poi)) : null}
+        {@const distStr = distM != null ? (distM < 1000 ? `${distM} m` : `${(distM/1000).toFixed(1).replace('.',',')} km`) : ''}
+        {@const ohState = poi.openingHours ? openStateAt(poi.openingHours, now) : 'unknown'}
+        {@const badge = ri === 0 ? 'Più vicino' : poi.gem ? 'Nascosto' : (poi.score ?? 0) > 70 ? 'Famoso' : ohState === 'open' ? 'Aperto ora' : ''}
         <button class="replace-item" onclick={() => confirmReplaceStop(poi)}>
           <span class="replace-dot" style="background:{color}"></span>
           <div class="replace-text">
-            <span class="replace-name">{poi.name}</span>
-            <span class="replace-sub">{catLabel(poi)} · ~{effVisit(poi)} min</span>
+            <span class="replace-name">
+              {poi.name}
+              {#if badge}<span class="replace-badge">{badge}</span>{/if}
+            </span>
+            <span class="replace-sub">
+              {catLabel(poi)} · ~{effVisit(poi)} min
+              {#if distStr} · {distStr}{/if}
+              {#if ohState === 'open'}<span class="replace-open"> · Aperto</span>{/if}
+              {#if ohState === 'closed'}<span class="replace-closed"> · Chiuso</span>{/if}
+            </span>
           </div>
-          <i class="ti ti-chevron-right"></i>
+          <i class="ti ti-chevron-right replace-chev"></i>
         </button>
         {/each}
       </div>
@@ -2444,7 +2630,7 @@
   </div>
   {/if}
 
-  <!-- ── Toast ─────────────────────────────────────────────── -->
+  <!-- ── Toast ─────────────────────────────────���───────────── -->
   <NameDialog
     open={nameDialog.open}
     title={nameDialog.title}

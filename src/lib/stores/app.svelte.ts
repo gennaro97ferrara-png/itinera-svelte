@@ -4,14 +4,19 @@ class AppStore {
   // navigation — si parte dal risultato (auto-generato al boot), non dal form
   screen = $state<Screen>('home');
 
-  // time budget
-  minutes = $state(210);
+  // time budget — default 6 ore per un'area ampia e itinerario ricco
+  minutes = $state(360);
 
   // mezzo di spostamento
   mode = $state<TravelMode>('walk');
 
-  // categories (array, toggled via helpers)
-  cats = $state<string[]>(['musei', 'monumenti', 'storico', 'arte', 'chiese']);
+  // categories — mix bilanciato: cultura, cibo, luoghi, vita notturna, scoperte
+  cats = $state<string[]>([
+    'musei', 'monumenti', 'storico', 'chiese',   // cultura
+    'parchi', 'piazze', 'panorami',               // luoghi
+    'ristoranti', 'caffe', 'gelati',              // cibo
+    'scoperte',                                   // esplorazione
+  ]);
 
   // trip options
   roundTrip  = $state(true);
