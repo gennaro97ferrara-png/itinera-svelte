@@ -557,6 +557,10 @@
   );
 
   // ── Punteggio qualità itinerario ──────────────────────────
+  // Data di riferimento per verificare gli orari di apertura:
+  // usa l'orario di partenza pianificato (se impostato), altrimenti adesso.
+  let checkDate = $derived(app.departureAt ? new Date(app.departureAt) : now);
+
   let routeScore = $derived.by(() => {
     if (!app.stops.length) return null;
     const stops = app.stops.filter(s => s.kind === 'stop');
@@ -565,11 +569,11 @@
     // Penalità per conflitti orari
     if (scheduleConflicts > 0) score -= scheduleConflicts * 12;
     // Bonus tappe aperte
-    const openCount = stops.filter(s => s.poi?.openingHours && openStateAt(s.poi.openingHours, now) === 'open').length;
+    const openCount = stops.filter(s => s.poi?.openingHours && openStateAt(s.poi.openingHours, checkDate) === 'open').length;
     const withHours = stops.filter(s => s.poi?.openingHours).length;
     if (withHours > 0 && openCount === withHours) score += 8;
     // Penalità per troppe tappe chiuse
-    const closedCount = stops.filter(s => s.poi?.openingHours && openStateAt(s.poi.openingHours, now) === 'closed').length;
+    const closedCount = stops.filter(s => s.poi?.openingHours && openStateAt(s.poi.openingHours, checkDate) === 'closed').length;
     score -= closedCount * 6;
     // Bonus distanza media bassa
     const avgWalk = totalWalk / Math.max(stops.length, 1);
@@ -720,7 +724,7 @@
     return null;
   }
 
-  // ── Drag-and-drop ─────────────────────────────────────────
+  // ── Drag-and-drop (desktop, HTML5) ───────────────────────
   let dragIdx: number | null = null;
 
   function onDragStart(e: DragEvent, i: number) {
@@ -751,6 +755,98 @@
     (e.currentTarget as HTMLElement).classList.remove('dragging');
     document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
     dragIdx = null;
+  }
+
+  // ── Touch drag & drop (mobile) ────────────────────────────
+  // Long-press (300ms) su una tappa per avviare il drag touch.
+  let tdDstIdx   = $state(-1);    // card target highlight (reattivo)
+  let tdActiveSrc = $state(-1);   // card sorgente (reattivo per opacità)
+  let tdGhost: HTMLElement | null = null;
+  let tdSrcIdx   = -1;
+  let tdOffY     = 0;
+  let tdStartX   = 0;
+  let tdStartY   = 0;
+  let tdTimer    = 0;
+  let tdDragging = false;
+
+  function tdCleanup() {
+    clearTimeout(tdTimer);
+    document.removeEventListener('touchmove', tdMoveDrag);
+    document.removeEventListener('touchend',  tdEndDrag);
+    document.removeEventListener('touchmove', tdCancelMove);
+    document.removeEventListener('touchend',  tdCancelEnd);
+    if (tdGhost) { tdGhost.remove(); tdGhost = null; }
+    tdSrcIdx    = -1;
+    tdDstIdx    = -1;
+    tdActiveSrc = -1;
+    tdDragging  = false;
+  }
+
+  // Listener passivi aggiunti al touchstart per annullare se l'utente scorre
+  function tdCancelMove(e: TouchEvent) {
+    const t = e.touches[0];
+    if (Math.hypot(t.clientX - tdStartX, t.clientY - tdStartY) > 8) tdCleanup();
+  }
+  function tdCancelEnd() { tdCleanup(); }
+
+  function onTouchStartCard(e: TouchEvent, i: number) {
+    if (app.stops[i]?.kind !== 'stop') return;
+    tdStartX = e.touches[0].clientX;
+    tdStartY = e.touches[0].clientY;
+    // Ascolta eventuali movimenti precoci (scroll) per annullare
+    document.addEventListener('touchmove', tdCancelMove, { passive: true });
+    document.addEventListener('touchend',  tdCancelEnd,  { passive: true });
+    tdTimer = setTimeout(() => {
+      // Long press confermato: avvia il drag
+      document.removeEventListener('touchmove', tdCancelMove);
+      document.removeEventListener('touchend',  tdCancelEnd);
+      tdSrcIdx   = i;
+      tdDragging = true;
+      tdActiveSrc = i;
+      const row  = document.querySelector(`[data-i="${i}"]`) as HTMLElement | null;
+      const card = row?.querySelector('.tl-card') as HTMLElement | null;
+      if (card) {
+        const cr = card.getBoundingClientRect();
+        tdOffY  = tdStartY - cr.top;
+        tdGhost = card.cloneNode(true) as HTMLElement;
+        Object.assign(tdGhost.style, {
+          position: 'fixed', left: `${cr.left}px`, top: `${cr.top}px`,
+          width: `${cr.width}px`, height: `${cr.height}px`,
+          pointerEvents: 'none', opacity: '0.88', zIndex: '10000',
+          borderRadius: '12px', boxShadow: '0 8px 32px rgba(0,0,0,.22)',
+          transform: 'scale(1.04)', background: 'var(--surface, #fff)',
+          overflow: 'hidden', transition: 'none',
+        });
+        document.body.appendChild(tdGhost);
+      }
+      if (browser && navigator.vibrate) navigator.vibrate(30);
+      document.addEventListener('touchmove', tdMoveDrag, { passive: false });
+      document.addEventListener('touchend',  tdEndDrag,  { passive: true });
+    }, 300) as unknown as number;
+  }
+
+  function tdMoveDrag(e: TouchEvent) {
+    if (!tdDragging || !tdGhost) return;
+    e.preventDefault();
+    const t = e.touches[0];
+    tdGhost.style.top = `${t.clientY - tdOffY}px`;
+    const under = document.elementFromPoint(t.clientX, t.clientY);
+    const row   = under?.closest('[data-i]') as HTMLElement | null;
+    if (row) {
+      const ti = parseInt(row.dataset.i ?? '-1');
+      tdDstIdx = (ti >= 0 && ti !== tdSrcIdx && app.stops[ti]?.kind === 'stop') ? ti : -1;
+    } else {
+      tdDstIdx = -1;
+    }
+  }
+
+  function tdEndDrag() {
+    if (tdDragging && tdSrcIdx >= 0 && tdDstIdx >= 0 && tdSrcIdx !== tdDstIdx) {
+      const next = [...app.stops];
+      [next[tdSrcIdx], next[tdDstIdx]] = [next[tdDstIdx], next[tdSrcIdx]];
+      setRouteStops(next);
+    }
+    tdCleanup();
   }
 
   // ── Partenza / destinazione ───────────────────────────────
@@ -867,6 +963,62 @@
   let showQuickStop    = $state(false);
   let quickStopBusy    = $state(false);
   let insertAfterIdx   = $state(-1);   // indice dopo cui inserire la nuova tappa
+
+  // Ricerca libera nel modale quick-stop
+  let qsQuery      = $state('');
+  let qsResults    = $state<GeoResult[]>([]);
+  let qsSearching  = $state(false);
+  let qsDebounce   = 0;
+
+  // Centro geografico della rotta (per bias della ricerca Nominatim)
+  let routeCenter = $derived.by(() => {
+    const stops = app.stops.filter(s => s.kind === 'stop');
+    if (!stops.length) return app.user ?? null;
+    return {
+      lat: stops.reduce((a, s) => a + s.lat, 0) / stops.length,
+      lng: stops.reduce((a, s) => a + s.lng, 0) / stops.length,
+    };
+  });
+
+  function qsInputChange(q: string) {
+    qsQuery = q;
+    clearTimeout(qsDebounce);
+    if (q.trim().length < 2) { qsResults = []; qsSearching = false; return; }
+    qsSearching = true;
+    qsDebounce = setTimeout(async () => {
+      qsResults  = await searchPlace(q, routeCenter ?? undefined);
+      qsSearching = false;
+    }, 350) as unknown as number;
+  }
+
+  function closeQuickStop() {
+    showQuickStop = false;
+    qsQuery      = '';
+    qsResults    = [];
+    qsSearching  = false;
+  }
+
+  function addFromGeoResult(r: GeoResult) {
+    closeQuickStop();
+    const refIdx   = insertAfterIdx >= 0 ? insertAfterIdx : Math.floor((app.stops.length - 1) / 2);
+    const insertIdx = Math.min(refIdx + 1, app.stops.length - 1);
+    const poi: POI = {
+      id: `geo_${r.id}`,
+      name: r.name,
+      lat: r.lat,
+      lng: r.lng,
+      macro: 'luoghi',
+      sub:   [],
+      story: r.detail || 'Luogo aggiunto manualmente.',
+      visit: 30,
+    };
+    const newStop: Stop = { kind: 'stop', name: r.name, lat: r.lat, lng: r.lng, poi, visit: 30, mode: 'visit', gem: false };
+    const next = [...app.stops];
+    next.splice(insertIdx, 0, newStop);
+    setRouteStops(next);
+    app.focusIdx = insertIdx;
+    showToast(`${r.name} aggiunto ✓`);
+  }
 
   const QUICK_STOP_CATS = [
     { id: 'caffe',       label: 'Caffè',        emoji: '☕' },
@@ -1814,10 +1966,13 @@
         {@const legMin = s.walkMin ?? 0}
         {@const last = i === app.stops.length - 1}
         {@const stopNo = app.stops.slice(0, i + 1).filter(x => x.kind === 'stop').length}
-        {@const oh = s.poi?.openingHours ? openStateAt(s.poi.openingHours, now) : 'unknown'}
+        {@const oh = s.poi?.openingHours
+          ? openStateAt(s.poi.openingHours,
+              schedule?.[i]?.arrival ? new Date(schedule[i].arrival) : checkDate)
+          : 'unknown'}
         {@const reason = isStop ? shortReason(s, oh) : ''}
 
-        <div class="tl-row {s.kind} {i === app.focusIdx ? 'on' : ''}"
+        <div class="tl-row {s.kind} {i === app.focusIdx ? 'on' : ''} {tdDstIdx === i ? 'td-over' : ''} {tdActiveSrc === i ? 'td-src' : ''}"
             data-i={i}
             draggable={isStop}
             ondragstart={e => isStop && onDragStart(e, i)}
@@ -1825,6 +1980,7 @@
             ondragleave={onDragLeave}
             ondrop={e => onDrop(e, i)}
             ondragend={onDragEnd}
+            ontouchstart={e => isStop && onTouchStartCard(e, i)}
             onclick={() => {
               if (isStop) { onCardTap(i, s); return; }
               if (s.kind === 'start') { openOdSearch('start'); return; }
@@ -2180,7 +2336,7 @@
         <span class="pill">{catLabel(poi)}</span>
         <span class="pill"><i class="ti ti-clock"></i> {effVisit(poi) ? `~${effVisit(poi)} min` : 'transito'}</span>
         {#if poi.openingHours}
-        {@const oh = openLabel(openStateAt(poi.openingHours, now))}
+        {@const oh = openLabel(openStateAt(poi.openingHours, checkDate))}
         <span class="pill oh-badge {oh.cls}"><i class="ti {oh.icon}"></i>{oh.text}</span>
         {/if}
         {#each poiTags(poi) as tag}<span class="pill subtle">{tag}</span>{/each}
@@ -2677,12 +2833,12 @@
   <!-- ── Quick stop modal ────────────────────────────────── -->
   {#if showQuickStop}
   <div class="modal-backdrop" role="presentation"
-       onclick={() => showQuickStop = false}
-       onkeydown={e => e.key === 'Escape' && (showQuickStop = false)}>
+       onclick={closeQuickStop}
+       onkeydown={e => e.key === 'Escape' && closeQuickStop()}>
     <div class="modal qs-modal" role="dialog" aria-modal="true" aria-label="aggiungi tappa rapida" tabindex="-1"
          onclick={e => e.stopPropagation()} onkeydown={e => e.stopPropagation()}>
+
       <div class="modal-title"><i class="ti ti-circle-plus"></i> Aggiungi una sosta</div>
-      <p class="qs-desc">Scegli una categoria: troverò il posto più vicino lungo il percorso e lo inserirò come tappa.</p>
 
       {#if insertAfterIdx >= 0 && app.stops[insertAfterIdx]}
       <div class="qs-hint-bar">
@@ -2696,6 +2852,48 @@
       </div>
       {/if}
 
+      <!-- Ricerca luogo specifico -->
+      <div class="qs-search-wrap">
+        <i class="ti ti-search qs-search-icon"></i>
+        <input
+          class="qs-search-input"
+          type="search"
+          placeholder="Cerca un luogo specifico…"
+          value={qsQuery}
+          oninput={e => qsInputChange((e.currentTarget as HTMLInputElement).value)}
+          autocomplete="off"
+          spellcheck="false"
+        />
+        {#if qsSearching}
+        <i class="ti ti-loader-2 spin qs-search-spin"></i>
+        {:else if qsQuery}
+        <button class="qs-search-clear" onclick={() => qsInputChange('')} aria-label="cancella">
+          <i class="ti ti-x"></i>
+        </button>
+        {/if}
+      </div>
+
+      <!-- Risultati ricerca -->
+      {#if qsResults.length > 0}
+      <div class="qs-results">
+        {#each qsResults as r}
+        <button class="qs-result-item" onclick={() => addFromGeoResult(r)}>
+          <i class="ti ti-map-pin qs-result-pin"></i>
+          <div class="qs-result-text">
+            <span class="qs-result-name">{r.name}</span>
+            {#if r.detail}<span class="qs-result-detail">{r.detail}</span>{/if}
+          </div>
+          <i class="ti ti-plus qs-result-add"></i>
+        </button>
+        {/each}
+      </div>
+      {:else if qsQuery.length >= 2 && !qsSearching}
+      <p class="qs-no-results"><i class="ti ti-mood-empty"></i> Nessun risultato per "{qsQuery}"</p>
+      {/if}
+
+      <!-- Separatore categorie rapide -->
+      {#if !qsQuery}
+      <div class="qs-section-label">oppure scegli una categoria</div>
       <div class="qs-grid">
         {#each QUICK_STOP_CATS as cat}
         <button class="qs-chip" onclick={() => addQuickStop(cat.id)}>
@@ -2704,8 +2902,9 @@
         </button>
         {/each}
       </div>
+      {/if}
 
-      <button class="btn btn-ghost btn-block" style="margin-top:10px" onclick={() => showQuickStop = false}>Annulla</button>
+      <button class="btn btn-ghost btn-block" style="margin-top:10px" onclick={closeQuickStop}>Annulla</button>
     </div>
   </div>
   {/if}
@@ -2733,7 +2932,7 @@
         {@const color = MACRO_COLOR[poi.gem ? 'scoperte' : poi.macro] ?? '#666'}
         {@const distM = replacingStop ? Math.round(haversine(replacingStop, poi)) : null}
         {@const distStr = distM != null ? (distM < 1000 ? `${distM} m` : `${(distM/1000).toFixed(1).replace('.',',')} km`) : ''}
-        {@const ohState = poi.openingHours ? openStateAt(poi.openingHours, now) : 'unknown'}
+        {@const ohState = poi.openingHours ? openStateAt(poi.openingHours, checkDate) : 'unknown'}
         {@const badge = ri === 0 ? 'Più vicino' : poi.gem ? 'Nascosto' : (poi.score ?? 0) > 70 ? 'Famoso' : ohState === 'open' ? 'Aperto ora' : ''}
         <button class="replace-item" onclick={() => confirmReplaceStop(poi)}>
           <span class="replace-dot" style="background:{color}"></span>
@@ -2813,6 +3012,10 @@
     z-index: 500;
   }
 
+  /* ── Touch drag feedback ─────────────────────── */
+  .tl-row.td-src  { opacity: 0.35; }
+  .tl-row.td-over { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 14px; }
+
   /* ── Separatore "Aggiungi sosta" tra le tappe ──────────── */
   .tl-between-sep {
     display: flex;
@@ -2879,6 +3082,70 @@
     color: var(--text-2);
     margin: 0 0 10px;
     line-height: 1.5;
+  }
+  /* Search field */
+  .qs-search-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1.5px solid var(--border);
+    border-radius: 12px;
+    padding: 9px 12px;
+    background: var(--surface-2);
+    margin-bottom: 10px;
+    transition: border-color .15s;
+  }
+  .qs-search-wrap:focus-within { border-color: var(--accent); }
+  .qs-search-icon { font-size: 16px; color: var(--text-2); flex-shrink: 0; }
+  .qs-search-input {
+    flex: 1; border: none; background: transparent; outline: none;
+    font-size: 15px; font-family: inherit; color: var(--text-1);
+    min-width: 0;
+  }
+  .qs-search-input::placeholder { color: var(--text-2); }
+  .qs-search-spin { font-size: 15px; color: var(--accent); flex-shrink: 0; }
+  .qs-search-clear {
+    background: none; border: none; color: var(--text-2); cursor: pointer;
+    padding: 0; display: flex; align-items: center; font-size: 14px;
+  }
+  /* Results list */
+  .qs-results {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 8px;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .qs-result-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    border: none;
+    border-radius: 10px;
+    background: var(--surface-2);
+    cursor: pointer;
+    text-align: left;
+    transition: background .13s;
+    width: 100%;
+  }
+  .qs-result-item:hover, .qs-result-item:active { background: color-mix(in srgb, var(--accent) 10%, var(--surface-2)); }
+  .qs-result-pin { font-size: 15px; color: var(--accent); flex-shrink: 0; }
+  .qs-result-text { flex: 1; min-width: 0; }
+  .qs-result-name { display: block; font-size: 14px; font-weight: 600; color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qs-result-detail { display: block; font-size: 11px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qs-result-add { font-size: 15px; color: var(--accent); flex-shrink: 0; }
+  .qs-no-results { font-size: 13px; color: var(--text-2); text-align: center; padding: 8px 0; margin: 0 0 8px; display: flex; align-items: center; justify-content: center; gap: 6px; }
+  /* Section label */
+  .qs-section-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-2);
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    margin: 4px 0 8px;
+    text-align: center;
   }
   .qs-hint-bar {
     display: flex;

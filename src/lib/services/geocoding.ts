@@ -34,12 +34,19 @@ export async function reverseGeocode(lat: number, lng: number): Promise<string |
   }
 }
 
-export async function searchPlace(query: string): Promise<GeoResult[]> {
+export async function searchPlace(
+  query: string,
+  near?: { lat: number; lng: number }
+): Promise<GeoResult[]> {
   if (query.trim().length < 2) return [];
   controller?.abort();
   controller = new AbortController();
   try {
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=5&accept-language=it&addressdetails=1`;
+    // viewbox opzionale per dare priorità ai risultati vicino alla rotta
+    const vb = near
+      ? `&viewbox=${(near.lng - 0.06).toFixed(5)},${(near.lat + 0.06).toFixed(5)},${(near.lng + 0.06).toFixed(5)},${(near.lat - 0.06).toFixed(5)}&bounded=0`
+      : '';
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=6&accept-language=it&addressdetails=1${vb}`;
     const r = await fetch(url, {
       signal: controller.signal,
       headers: { 'User-Agent': 'Itinera-App/1.0' }

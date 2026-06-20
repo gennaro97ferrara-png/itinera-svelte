@@ -1,9 +1,6 @@
 <script lang="ts">
   import { app } from '$lib/stores/app.svelte';
 
-  // Editor data+ora di partenza con input nativi VISIBILI: si aprono in modo
-  // affidabile su iOS, Android e desktop (niente overlay opacity:0).
-
   function pad2(n: number): string { return String(n).padStart(2, '0'); }
   function iso(d: Date): string {
     return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
@@ -13,6 +10,9 @@
     const d = new Date(); d.setDate(d.getDate() + dayOffset); d.setHours(hour, minute, 0, 0);
     app.departureAt = iso(d);
   }
+
+  // "Oggi 9:00" ha senso solo se le 9:00 di oggi non sono ancora passate
+  const oggi9Passato = new Date().getHours() >= 9;
 
   let datePart = $derived(app.departureAt ? app.departureAt.slice(0, 10) : '');
   let timePart = $derived(app.departureAt ? app.departureAt.slice(11, 16) : '');
@@ -31,7 +31,9 @@
 <div class="dep-edit">
   <div class="dep-edit-presets">
     <button type="button" class="plan-chip" onclick={setNow}>Adesso</button>
+    {#if !oggi9Passato}
     <button type="button" class="plan-chip" onclick={() => setAt(0, 9)}>Oggi 9:00</button>
+    {/if}
     <button type="button" class="plan-chip" onclick={() => setAt(1, 9)}>Domani 9:00</button>
     {#if app.departureAt}
     <button type="button" class="plan-chip plan-chip--clear" aria-label="rimuovi orario"
