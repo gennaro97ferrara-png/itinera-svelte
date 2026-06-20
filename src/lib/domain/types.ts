@@ -63,7 +63,7 @@ export interface Bounds {
 
 export type TravelMode = 'walk' | 'bike' | 'car' | 'transit';
 
-export type Screen = 'home' | 'route' | 'detail' | 'nav' | 'trips' | 'trip' | 'calendar' | 'schedule' | 'settings';
+export type Screen = 'home' | 'route' | 'detail' | 'nav' | 'trips' | 'trip' | 'calendar' | 'settings';
 
 export interface MacroCategory {
   id: string;

@@ -65,74 +65,128 @@ function cacheSet(key: string, pois: POI[]): void {
 }
 
 const CAT_FILTERS: Record<string, { f: string; types: string[] }[]> = {
-  musei:      [{ f: '["tourism"="museum"]',                          types: ['node', 'way'] }],
-  monumenti:  [{ f: '["tourism"="monument"]',                        types: ['node', 'way'] },
-               { f: '["historic"="monument"]',                       types: ['node', 'way'] },
-               { f: '["historic"="archaeological_site"]',            types: ['node', 'way'] }],
-  storico:    [{ f: '["historic"]',                                  types: ['node', 'way'] }],
-  arte:       [{ f: '["tourism"="artwork"]',                         types: ['node'] }],
-  chiese:     [{ f: '["amenity"="place_of_worship"]',                types: ['node', 'way'] }],
-  ristoranti: [{ f: '["amenity"="restaurant"]',                      types: ['node', 'way'] }],
-  pizza:      [{ f: '["amenity"="restaurant"]["cuisine"~"pizza",i]', types: ['node'] },
-               { f: '["amenity"="fast_food"]["cuisine"~"pizza",i]',  types: ['node'] }],
-  panini:     [{ f: '["amenity"="fast_food"]["cuisine"~"sandwich",i]', types: ['node'] },
-               { f: '["shop"="sandwich"]',                           types: ['node'] }],
-  gelati:     [{ f: '["amenity"="ice_cream"]',                       types: ['node'] },
-               { f: '["shop"="ice_cream"]',                          types: ['node'] },
-               { f: '["cuisine"~"ice_cream",i]',                     types: ['node'] }],
-  street:     [{ f: '["amenity"="fast_food"]',                       types: ['node'] },
-               { f: '["amenity"="food_court"]',                      types: ['node'] }],
-  caffe:      [{ f: '["amenity"="cafe"]',                            types: ['node'] }],
-  bar:        [{ f: '["amenity"="bar"]',                             types: ['node', 'way'] }],
-  pub:        [{ f: '["amenity"="pub"]',                             types: ['node', 'way'] }],
-  cocktail:   [{ f: '["amenity"="bar"]["cocktails"~"yes",i]',        types: ['node'] },
-               { f: '["amenity"="bar"]["drink:cocktail"~"yes",i]',   types: ['node'] }],
-  discoteche: [{ f: '["amenity"="nightclub"]',                       types: ['node', 'way'] },
-               { f: '["leisure"="dance"]',                           types: ['node', 'way'] }],
-  livemusic:  [{ f: '["amenity"~"nightclub|bar|pub"]["live_music"~"yes",i]', types: ['node'] }],
-  teatri:     [{ f: '["amenity"="theatre"]',                         types: ['node', 'way'] }],
-  piazze:     [{ f: '["place"="square"]',                            types: ['node', 'way', 'relation'] }],
-  parchi:     [{ f: '["leisure"="park"]',                            types: ['way', 'relation'] },
-               { f: '["leisure"="garden"]',                          types: ['way', 'relation'] }],
-  panorami:   [{ f: '["tourism"="viewpoint"]',                       types: ['node'] }],
-  mercati:    [{ f: '["amenity"="marketplace"]',                     types: ['node', 'way'] }],
-  spiagge:    [{ f: '["natural"="beach"]',                           types: ['node', 'way'] }],
-  toilets:    [{ f: '["amenity"="toilets"]',                         types: ['node', 'way'] }],
-  acqua:      [{ f: '["amenity"="drinking_water"]',                  types: ['node'] }],
-  farmacie:   [{ f: '["amenity"="pharmacy"]',                        types: ['node', 'way'] }],
-  bancomat:   [{ f: '["amenity"="atm"]',                             types: ['node'] }],
-  stazioni:   [{ f: '["railway"="station"]',                         types: ['node', 'way'] },
-               { f: '["station"="subway"]',                          types: ['node'] }],
-  aeroporti:  [{ f: '["aeroway"="aerodrome"]',                       types: ['node', 'way'] }],
-  parcheggi:  [{ f: '["amenity"="parking"]',                         types: ['node', 'way'] }],
-  scoperte:   [{ f: '["historic"]',                                  types: ['node'] },
-               { f: '["tourism"="artwork"]',                         types: ['node'] }]
+  // ── Cultura ─────────────────────────────────────────────────
+  musei:       [{ f: '["tourism"="museum"]',                              types: ['node', 'way'] }],
+  gallerie:    [{ f: '["tourism"="gallery"]',                             types: ['node', 'way'] }],
+  monumenti:   [{ f: '["tourism"="monument"]',                            types: ['node', 'way'] },
+                { f: '["historic"="monument"]',                           types: ['node', 'way'] },
+                { f: '["historic"="archaeological_site"]',                types: ['node', 'way'] }],
+  rovine:      [{ f: '["historic"~"ruins|castle|palace|fort|amphitheatre|city_gate|city_wall|aqueduct"]', types: ['node', 'way'] }],
+  chiese:      [{ f: '["amenity"="place_of_worship"]',                    types: ['node', 'way'] }],
+  arte:        [{ f: '["tourism"="artwork"]',                             types: ['node'] }],
+  teatri:      [{ f: '["amenity"="theatre"]',                             types: ['node', 'way'] }],
+  cinema:      [{ f: '["amenity"="cinema"]',                              types: ['node', 'way'] }],
+  biblioteche: [{ f: '["amenity"="library"]',                             types: ['node', 'way'] }],
+  storico:     [{ f: '["historic"]',                                      types: ['node', 'way'] }],
+  // ── Natura & Outdoor ────────────────────────────────────────
+  parchi:      [{ f: '["leisure"="park"]',                                types: ['way', 'relation'] },
+                { f: '["leisure"="garden"]',                              types: ['way', 'relation'] }],
+  panorami:    [{ f: '["tourism"="viewpoint"]',                           types: ['node'] }],
+  piazze:      [{ f: '["place"="square"]',                                types: ['node', 'way', 'relation'] }],
+  fontane:     [{ f: '["amenity"="fountain"]',                            types: ['node', 'way'] }],
+  spiagge:     [{ f: '["natural"="beach"]',                               types: ['node', 'way'] }],
+  riserve:     [{ f: '["leisure"="nature_reserve"]',                      types: ['way', 'relation'] },
+                { f: '["boundary"="protected_area"]',                     types: ['way', 'relation'] }],
+  // ── Cibo & Drink ─────────────────────────────────────────────
+  ristoranti:  [{ f: '["amenity"="restaurant"]',                          types: ['node', 'way'] }],
+  trattorie:   [{ f: '["amenity"="restaurant"]["cuisine"~"italian|regional|traditional",i]', types: ['node'] },
+                { f: '["amenity"="restaurant"]["name"~"trattoria|osteria|locanda",i]',        types: ['node'] }],
+  pizza:       [{ f: '["amenity"="restaurant"]["cuisine"~"pizza",i]',     types: ['node'] },
+                { f: '["amenity"="fast_food"]["cuisine"~"pizza",i]',      types: ['node'] }],
+  caffe:       [{ f: '["amenity"="cafe"]',                                types: ['node'] }],
+  pasticcerie: [{ f: '["shop"~"pastry|bakery|confectionery"]',            types: ['node'] },
+                { f: '["amenity"="cafe"]["cuisine"~"pastry|cake|bakery",i]', types: ['node'] }],
+  gelati:      [{ f: '["amenity"="ice_cream"]',                           types: ['node'] },
+                { f: '["shop"="ice_cream"]',                              types: ['node'] },
+                { f: '["cuisine"~"ice_cream",i]',                         types: ['node'] }],
+  street:      [{ f: '["amenity"="fast_food"]',                           types: ['node'] },
+                { f: '["amenity"="food_court"]',                          types: ['node'] }],
+  panini:      [{ f: '["amenity"="fast_food"]["cuisine"~"sandwich",i]',   types: ['node'] },
+                { f: '["shop"="sandwich"]',                               types: ['node'] }],
+  enoteca:     [{ f: '["shop"="wine"]',                                   types: ['node'] },
+                { f: '["amenity"="bar"]["drink:wine"~"yes",i]',           types: ['node'] },
+                { f: '["amenity"~"bar|restaurant"]["name"~"enoteca|vinoteca|cantina",i]', types: ['node'] }],
+  mercati:     [{ f: '["amenity"="marketplace"]',                         types: ['node', 'way'] }],
+  // ── Shopping ─────────────────────────────────────────────────
+  antiquariato:[{ f: '["shop"="antiques"]',                               types: ['node'] }],
+  librerie:    [{ f: '["shop"="books"]',                                  types: ['node'] }],
+  artigianato: [{ f: '["shop"~"craft|art|ceramics|jewelry|pottery|leather"]', types: ['node'] }],
+  souvenir:    [{ f: '["shop"="souvenir"]',                               types: ['node'] }],
+  moda:        [{ f: '["shop"~"clothes|fashion|shoes|accessories"]',      types: ['node'] }],
+  // ── Sport & Benessere ────────────────────────────────────────
+  spa:         [{ f: '["leisure"="spa"]',                                 types: ['node', 'way'] },
+                { f: '["amenity"="spa"]',                                 types: ['node', 'way'] },
+                { f: '["leisure"="sauna"]',                               types: ['node'] }],
+  sport:       [{ f: '["leisure"~"sports_centre|stadium|arena"]',         types: ['node', 'way'] }],
+  zoo:         [{ f: '["tourism"~"zoo|aquarium"]',                        types: ['node', 'way'] }],
+  parchi_gioco:[{ f: '["leisure"="playground"]',                          types: ['node', 'way'] }],
+  // ── Vita notturna ────────────────────────────────────────────
+  bar:         [{ f: '["amenity"="bar"]',                                 types: ['node', 'way'] }],
+  pub:         [{ f: '["amenity"="pub"]',                                 types: ['node', 'way'] }],
+  cocktail:    [{ f: '["amenity"="bar"]["cocktails"~"yes",i]',            types: ['node'] },
+                { f: '["amenity"="bar"]["drink:cocktail"~"yes",i]',       types: ['node'] }],
+  rooftop:     [{ f: '["amenity"="bar"]["rooftop"~"yes|terrace",i]',      types: ['node'] }],
+  discoteche:  [{ f: '["amenity"="nightclub"]',                           types: ['node', 'way'] },
+                { f: '["leisure"="dance"]',                               types: ['node', 'way'] }],
+  livemusic:   [{ f: '["amenity"~"nightclub|bar|pub"]["live_music"~"yes",i]', types: ['node'] }],
+  // ── Servizi ──────────────────────────────────────────────────
+  toilets:     [{ f: '["amenity"="toilets"]',                             types: ['node', 'way'] }],
+  acqua:       [{ f: '["amenity"="drinking_water"]',                      types: ['node'] }],
+  farmacie:    [{ f: '["amenity"="pharmacy"]',                            types: ['node', 'way'] }],
+  bancomat:    [{ f: '["amenity"="atm"]',                                 types: ['node'] }],
+  ospedali:    [{ f: '["amenity"~"hospital|clinic"]',                     types: ['node', 'way'] }],
+  // ── Scoperte (gem) ───────────────────────────────────────────
+  scoperte:    [{ f: '["historic"]',                                      types: ['node'] },
+                { f: '["tourism"="artwork"]',                             types: ['node'] }]
 };
 
 const VISIT_DEF: Record<string, number> = {
-  // indoor / strutturati: tempo reale di fruizione
-  musei: 120, chiese: 20, parchi: 35, teatri: 15,
-  // outdoor / monumenti: osservazione breve
-  monumenti: 15, storico: 10, arte: 8, piazze: 12, panorami: 10, mercati: 20, spiagge: 40,
-  // cibo
-  ristoranti: 70, pizza: 40, panini: 15, gelati: 12, street: 20, caffe: 18,
-  // vita notturna
-  bar: 30, pub: 45, cocktail: 40, discoteche: 90, livemusic: 60,
-  // servizi: tappe di utilità (nessun tempo di visita)
-  toilets: 0, acqua: 0, farmacie: 0, bancomat: 0
+  // Cultura
+  musei: 90, gallerie: 45, monumenti: 15, rovine: 30, chiese: 20, arte: 8,
+  teatri: 15, cinema: 100, biblioteche: 20, storico: 10,
+  // Natura
+  parchi: 30, panorami: 10, piazze: 10, fontane: 5, spiagge: 60, riserve: 45,
+  // Cibo
+  ristoranti: 60, trattorie: 75, pizza: 30, caffe: 15, pasticcerie: 15,
+  gelati: 10, street: 15, panini: 15, enoteca: 40, mercati: 25,
+  // Shopping
+  antiquariato: 30, librerie: 20, artigianato: 20, souvenir: 10, moda: 25,
+  // Benessere
+  spa: 120, sport: 20, zoo: 90, parchi_gioco: 45,
+  // Notturna
+  bar: 30, pub: 45, cocktail: 40, rooftop: 50, discoteche: 90, livemusic: 60,
+  // Servizi (utilità: 0 min)
+  toilets: 0, acqua: 0, farmacie: 0, bancomat: 0, ospedali: 0,
 };
 
 const MACRO_MAP: Record<string, string> = {
-  musei: 'cultura', monumenti: 'cultura', storico: 'cultura', arte: 'cultura', chiese: 'cultura', teatri: 'cultura',
-  ristoranti: 'cibo', pizza: 'cibo', panini: 'cibo', gelati: 'cibo', street: 'cibo', caffe: 'cibo',
-  bar: 'notturna', pub: 'notturna', cocktail: 'notturna', discoteche: 'notturna', livemusic: 'notturna',
-  piazze: 'luoghi', parchi: 'luoghi', panorami: 'luoghi', mercati: 'luoghi', spiagge: 'luoghi',
-  toilets: 'servizi', acqua: 'servizi', farmacie: 'servizi', bancomat: 'servizi'
+  // cultura
+  musei: 'cultura', gallerie: 'cultura', monumenti: 'cultura', rovine: 'cultura',
+  chiese: 'cultura', arte: 'cultura', teatri: 'cultura', cinema: 'cultura',
+  biblioteche: 'cultura', storico: 'cultura',
+  // natura
+  parchi: 'natura', panorami: 'natura', piazze: 'natura', fontane: 'natura',
+  spiagge: 'natura', riserve: 'natura',
+  // cibo
+  ristoranti: 'cibo', trattorie: 'cibo', pizza: 'cibo', caffe: 'cibo',
+  pasticcerie: 'cibo', gelati: 'cibo', street: 'cibo', panini: 'cibo',
+  enoteca: 'cibo', mercati: 'cibo',
+  // shopping
+  antiquariato: 'shopping', librerie: 'shopping', artigianato: 'shopping',
+  souvenir: 'shopping', moda: 'shopping',
+  // benessere
+  spa: 'benessere', sport: 'benessere', zoo: 'benessere', parchi_gioco: 'benessere',
+  // notturna
+  bar: 'notturna', pub: 'notturna', cocktail: 'notturna', rooftop: 'notturna',
+  discoteche: 'notturna', livemusic: 'notturna',
+  // servizi
+  toilets: 'servizi', acqua: 'servizi', farmacie: 'servizi',
+  bancomat: 'servizi', ospedali: 'servizi',
 };
 
 const MAINSTREAM_HISTORIC = [
   'monument', 'archaeological_site', 'castle', 'palace', 'fort',
-  'city_wall', 'city_gate', 'amphitheatre', 'aqueduct'
+  'city_wall', 'city_gate', 'amphitheatre', 'aqueduct', 'ruins',
 ];
 
 function buildQuery(cats: string[], lat: number, lng: number, radius: number): string {
@@ -178,44 +232,93 @@ function detectSubs(tags: any): string[] {
   const subs: string[] = [];
   const { tourism: t, amenity: a, historic: h, leisure: l, place: p,
           shop: sh, natural: n } = tags;
-  const cuisine = (tags.cuisine ?? '').toLowerCase();
+  const cuisine  = (tags.cuisine  ?? '').toLowerCase();
+  const name     = (tags.name     ?? '').toLowerCase();
+  const shopStr  = (sh            ?? '').toLowerCase();
+
+  // ── CULTURA ─────────────────────────────────────────────────
   if (t === 'museum')   subs.push('musei');
+  if (t === 'gallery')  subs.push('gallerie');
+  if (a === 'cinema')   subs.push('cinema');
+  if (a === 'library')  subs.push('biblioteche');
+  if (a === 'theatre')  subs.push('teatri');
+  if (t === 'artwork')  subs.push('arte');
+  if (a === 'place_of_worship') subs.push('chiese');
+
   if (t === 'monument' || h === 'monument') subs.push('monumenti');
-  if (h === 'archaeological_site') { if (!subs.includes('monumenti')) subs.push('monumenti'); subs.push('storico'); }
-  if (h === 'castle' || h === 'palace' || h === 'fort') {
+  if (h === 'archaeological_site') {
     if (!subs.includes('monumenti')) subs.push('monumenti');
-    if (!subs.includes('storico'))   subs.push('storico');
+    subs.push('storico');
+  }
+  const ROVINE_TYPES = ['ruins', 'castle', 'palace', 'fort', 'amphitheatre', 'city_wall', 'city_gate', 'aqueduct'];
+  if (h && ROVINE_TYPES.includes(h)) {
+    subs.push('rovine');
+    if (!subs.includes('storico')) subs.push('storico');
   }
   if (h && !subs.includes('storico')) subs.push('storico');
-  if (t === 'artwork')   subs.push('arte');
-  if (a === 'place_of_worship') subs.push('chiese');
+
+  // ── NATURA ──────────────────────────────────────────────────
+  if (p === 'square')     subs.push('piazze');
+  if (a === 'fountain')   subs.push('fontane');
+  if (l === 'park')       subs.push('parchi');
+  if (l === 'garden')     subs.push('parchi');
+  if (l === 'nature_reserve') subs.push('riserve');
+  if (t === 'viewpoint')  subs.push('panorami');
+  if (n === 'beach')      subs.push('spiagge');
+
+  // ── CIBO ─────────────────────────────────────────────────────
   if (a === 'restaurant') {
-    subs.push('ristoranti');
+    const isTrattoria = /italian|regional|traditional|toscana|romana|napoletana/.test(cuisine)
+      || /trattoria|osteria|locanda|taverna/.test(name);
+    if (isTrattoria) subs.push('trattorie');
+    else             subs.push('ristoranti');
     if (cuisine.includes('pizza')) subs.push('pizza');
   }
   if (a === 'fast_food' || a === 'food_court') {
-    if (cuisine.includes('pizza'))    subs.push('pizza');
+    if (cuisine.includes('pizza'))     subs.push('pizza');
     else if (cuisine.includes('sandwich')) subs.push('panini');
     else subs.push('street');
   }
-  if (sh === 'sandwich') subs.push('panini');
+  if (sh === 'sandwich')  subs.push('panini');
   if (a === 'ice_cream' || sh === 'ice_cream' || cuisine.includes('ice_cream')) subs.push('gelati');
-  if (a === 'cafe')      subs.push('caffe');
-  if (a === 'bar')       subs.push('bar');
-  if (a === 'pub')       subs.push('pub');
-  if (a === 'nightclub' || l === 'dance') subs.push('discoteche');
-  if (a === 'bar' && /yes|true/i.test(tags.cocktails ?? tags['drink:cocktail'] ?? '')) subs.push('cocktail');
-  if (/yes|true|live/i.test(tags.live_music ?? '')) subs.push('livemusic');
-  if (a === 'theatre')   subs.push('teatri');
-  if (p === 'square')    subs.push('piazze');
-  if (l === 'park' || l === 'garden') subs.push('parchi');
-  if (t === 'viewpoint') subs.push('panorami');
+  if (a === 'cafe') {
+    if (/pastry|cake|bakery/.test(cuisine)) subs.push('pasticcerie');
+    else subs.push('caffe');
+  }
+  if (['pastry', 'bakery', 'confectionery'].includes(shopStr)) subs.push('pasticcerie');
+  if (sh === 'wine' || /enoteca|vinoteca|cantina/.test(name)) subs.push('enoteca');
   if (a === 'marketplace') subs.push('mercati');
-  if (n === 'beach')     subs.push('spiagge');
+
+  // ── SHOPPING ─────────────────────────────────────────────────
+  if (sh === 'antiques')      subs.push('antiquariato');
+  if (sh === 'books')         subs.push('librerie');
+  if (['craft', 'art', 'ceramics', 'jewelry', 'pottery', 'leather'].includes(shopStr)) subs.push('artigianato');
+  if (sh === 'souvenir')      subs.push('souvenir');
+  if (['clothes', 'fashion', 'shoes', 'accessories'].includes(shopStr)) subs.push('moda');
+
+  // ── BENESSERE ────────────────────────────────────────────────
+  if (l === 'spa' || a === 'spa' || l === 'sauna') subs.push('spa');
+  if (['sports_centre', 'stadium', 'arena'].includes(l ?? ''))  subs.push('sport');
+  if (['zoo', 'aquarium'].includes(t ?? ''))        subs.push('zoo');
+  if (l === 'playground')     subs.push('parchi_gioco');
+
+  // ── NOTTURNA ─────────────────────────────────────────────────
+  if (a === 'bar') {
+    subs.push('bar');
+    if (/yes|true/i.test(tags.cocktails ?? tags['drink:cocktail'] ?? '')) subs.push('cocktail');
+    if (/yes|terrace/i.test(tags.rooftop ?? ''))  subs.push('rooftop');
+  }
+  if (a === 'pub')  subs.push('pub');
+  if (a === 'nightclub' || l === 'dance') subs.push('discoteche');
+  if (/yes|true|live/i.test(tags.live_music ?? '') && !subs.includes('livemusic')) subs.push('livemusic');
+
+  // ── SERVIZI ──────────────────────────────────────────────────
   if (a === 'toilets')        subs.push('toilets');
   if (a === 'drinking_water') subs.push('acqua');
   if (a === 'pharmacy')       subs.push('farmacie');
   if (a === 'atm')            subs.push('bancomat');
+  if (['hospital', 'clinic'].includes(a ?? '')) subs.push('ospedali');
+
   return subs.length ? subs : ['storico'];
 }
 
@@ -276,6 +379,16 @@ function buildStory(tags: any, name: string): string {
     const subj = tags.museum ? `dedicato a ${tags.museum.replace(/_/g, ' ')}` : 'del territorio';
     return `Museo ${subj}${heritage}.`;
   }
+  if (t === 'gallery')   return `Galleria d'arte${epochSuffix}${heritage}.`;
+  if (a === 'cinema')    return 'Cinema.';
+  if (a === 'library')   return `Biblioteca${heritage}.`;
+  if (a === 'fountain')  return 'Fontana decorativa — una sosta scenografica.';
+  if (a === 'spa')       return 'Centro benessere e relax.';
+  if (['zoo', 'aquarium'].includes(t ?? ''))
+    return t === 'aquarium' ? 'Acquario.' : 'Zoo.';
+  if (l === 'playground') return 'Parco giochi.';
+  if (l === 'sports_centre' || l === 'stadium') return 'Impianto sportivo.';
+  if (l === 'nature_reserve') return 'Area naturale protetta.';
   if (t === 'artwork') {
     const kind = tags.artwork_type ? tags.artwork_type.replace(/_/g, ' ') : 'opera';
     const author = tags.artist_name ? ` di ${tags.artist_name}` : '';
@@ -289,6 +402,8 @@ function buildStory(tags: any, name: string): string {
   }
   if (a === 'restaurant' || a === 'fast_food' || a === 'food_court') {
     const cui = tags.cuisine ? tags.cuisine.split(';')[0].replace(/_/g, ' ') : '';
+    const nameL = (tags.name ?? '').toLowerCase();
+    if (/trattoria|osteria|locanda|taverna/.test(nameL)) return 'Cucina tradizionale — sapori autentici del territorio.';
     return cui ? `Cucina ${cui} — una sosta per mangiare.` : 'Una tappa per mangiare lungo il cammino.';
   }
   if (a === 'cafe')      return 'Caffè per una pausa veloce.';
@@ -298,6 +413,16 @@ function buildStory(tags: any, name: string): string {
   if (a === 'theatre')   return `Teatro${epochSuffix}${heritage}.`;
   if (a === 'marketplace') return 'Mercato cittadino tra le bancarelle.';
   if (tags.natural === 'beach') return 'Spiaggia per una pausa vista mare.';
+  if (a === 'hospital' || a === 'clinic') return 'Struttura sanitaria.';
+  if (['pastry', 'bakery', 'confectionery'].includes(tags.shop ?? '')) return 'Pasticceria — dolci e prodotti da forno artigianali.';
+  if (tags.shop === 'wine')   return 'Enoteca per degustare e acquistare vini locali.';
+  if (tags.shop === 'antiques') return 'Negozio di antiquariato — oggetti e curiosità d\'epoca.';
+  if (tags.shop === 'books')  return 'Libreria.';
+  if (tags.shop === 'souvenir') return 'Negozio di souvenir.';
+  if (['craft', 'ceramics', 'jewelry', 'pottery'].includes(tags.shop ?? ''))
+    return 'Bottega artigianale — produzione e vendita diretta.';
+  if (['clothes', 'fashion', 'shoes'].includes(tags.shop ?? ''))
+    return 'Negozio di abbigliamento.';
   if (a === 'toilets')        return 'Servizi igienici pubblici.';
   if (a === 'drinking_water') return 'Fontanella di acqua potabile.';
   if (a === 'pharmacy')       return 'Farmacia.';

@@ -5,6 +5,7 @@
   import { fly }        from 'svelte/transition';
 
   import MapView    from '$lib/components/Map.svelte';
+  import DepartureEditor from '$lib/components/DepartureEditor.svelte';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import LoadingOverlay from '$lib/components/LoadingOverlay.svelte';
   import NameDialog from '$lib/components/NameDialog.svelte';
@@ -19,7 +20,7 @@
   import { fetchPois, fetchPoisInArea, fetchTransitStopsNearRoute } from '$lib/services/overpass';
   import type { TransitStop } from '$lib/services/overpass';
   import { openStateAt, openLabel } from '$lib/services/openingHours';
-  import { searchPlace } from '$lib/services/geocoding';
+  import { searchPlace, reverseGeocode } from '$lib/services/geocoding';
   import { computeSchedule, scheduleTotalMin } from '$lib/domain/schedule';
   import type { GeoResult } from '$lib/services/geocoding';
   import type { POI, Stop, Bounds, TravelMode } from '$lib/domain/types';
@@ -345,52 +346,10 @@
     return new Date(ms).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
   }
 
-  function fmtDepLabel(iso: string): string {
-    if (!iso) return '';
-    const d = new Date(iso);
-    const today = new Date();
-    const isToday = d.toDateString() === today.toDateString();
-    const tom = new Date(today); tom.setDate(today.getDate() + 1);
-    const time = d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
-    if (isToday) return `Oggi · ${time}`;
-    if (d.toDateString() === tom.toDateString()) return `Domani · ${time}`;
-    return d.toLocaleDateString('it-IT', { weekday: 'short', day: '2-digit', month: 'short' }) + ' · ' + time;
-  }
-
-  // ── Helper orario di partenza (live e a lungo raggio) ──────
-  function pad2(n: number): string { return String(n).padStart(2, '0'); }
-  function toLocalIso(d: Date): string {
-    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-  }
-  function setDepNow() {
-    const d = new Date(); d.setSeconds(0, 0);
-    app.departureAt = toLocalIso(d);
-  }
-  function setDepAt(dayOffset: number, hour: number, minute = 0) {
-    const d = new Date(); d.setDate(d.getDate() + dayOffset);
-    d.setHours(hour, minute, 0, 0);
-    app.departureAt = toLocalIso(d);
-  }
-
   function changeStopVisit(i: number, delta: number) {
     const s = app.stops[i];
     if (!s || s.kind !== 'stop') return;
     app.setStopVisit(i, (s.visit ?? 30) + delta);
-  }
-
-  // Verifica se una tappa con orari di apertura risulta chiusa all'orario pianificato
-  function closedAtScheduled(i: number): boolean {
-    const s = app.stops[i];
-    const oh = s?.poi?.openingHours;
-    const sc = schedule?.[i];
-    if (!oh || !sc) return false;
-    return openStateAt(oh, new Date(sc.arrival)) === 'closed';
-  }
-
-  // ── Planner ────────────────────────────────────────────────
-  function openPlanner() {
-    if (!app.departureAt) setDepNow();   // entra sempre con un orario, anche "live"
-    showScreen('schedule');
   }
 
   // ── Transit leg check ─────────────────────────────────────
@@ -997,6 +956,78 @@
       { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
   }
 
+  // Indirizzi risolti (reverse geocoding) per i punti senza address: coord → indirizzo
+  function coordKey(lat: number, lng: number): string { return `${lat.toFixed(5)},${lng.toFixed(5)}`; }
+  let pdfRefMap = new Map<string, string>();
+
+  // Riferimento leggibile di una tappa: indirizzo OSM, o indirizzo risolto, o coordinate.
+  function stopRef(s: Stop): string {
+    if (s.poi?.address) return s.poi.address;
+    const r = pdfRefMap.get(coordKey(s.lat, s.lng));
+    if (r) return r;
+    return `coord. ${s.lat.toFixed(4)}, ${s.lng.toFixed(4)}`;
+  }
+  function hasResolvedRef(s: Stop): boolean {
+    return !!(s.poi?.address || pdfRefMap.get(coordKey(s.lat, s.lng)));
+  }
+
+  // Pre-elaborazione prima del PDF: risolve indirizzi di partenza/arrivo e scarica
+  // i riassunti Wikipedia mancanti per il riepilogo descrittivo.
+  async function enrichForPdf(days: TripDay[]) {
+    const toResolve: Stop[] = [];
+    const seenCoord = new Set<string>();
+    for (const d of days) {
+      for (const s of d.stops) {
+        if (s.poi?.address) continue;
+        const k = coordKey(s.lat, s.lng);
+        if (seenCoord.has(k) || pdfRefMap.has(k)) continue;
+        seenCoord.add(k);
+        toResolve.push(s);   // soprattutto start/end (la tua posizione, ritorno…)
+      }
+    }
+    await Promise.all(toResolve.map(async s => {
+      const addr = await reverseGeocode(s.lat, s.lng);
+      if (addr) pdfRefMap.set(coordKey(s.lat, s.lng), addr);
+    }));
+
+    const poisToFetch: POI[] = [];
+    const seenPoi = new Set<string>();
+    for (const d of days) {
+      for (const s of d.stops) {
+        const p = s.poi;
+        if (!p || s.kind !== 'stop' || !(p.wiki || p.wikidata) || p._sum?.extract) continue;
+        if (seenPoi.has(p.id)) continue;
+        seenPoi.add(p.id);
+        poisToFetch.push(p);
+      }
+    }
+    await Promise.all(poisToFetch.map(p => fetchSummary(p).catch(() => null)));
+  }
+
+  // Sezione "Cosa visiterai": descrizioni accurate (Wikipedia se disponibile, altrimenti racconto).
+  function pdfVisitSummary(days: TripDay[], multiDay: boolean): string {
+    const blocks = days.map((d, di) => {
+      const items = d.stops.filter(s => s.kind === 'stop').map((s, si) => {
+        const p = s.poi;
+        const desc = (p?._sum?.extract ?? p?.story ?? '').trim();
+        const fromWiki = !!p?._sum?.extract;
+        const cat = p ? esc(catLabel(p)) : '';
+        const ref = hasResolvedRef(s) ? esc(stopRef(s)) : '';
+        const wikiLink = p?._sum?.url
+          ? ` <a href="${esc(p._sum.url)}" target="_blank" rel="noopener">leggi su Wikipedia →</a>` : '';
+        return `<div class="vs-item">
+          <div class="vs-name"><span class="vs-num">${si + 1}</span> ${esc(s.name)}</div>
+          <div class="vs-cat">${cat ? cat + ' · ' : ''}~${s.visit} min${ref ? ' · ' + ref : ''}</div>
+          ${desc ? `<div class="vs-desc">${esc(desc)}${fromWiki ? wikiLink : ''}</div>` : ''}
+        </div>`;
+      }).join('');
+      if (!items) return '';
+      const head = multiDay ? `<h3 class="vs-day">Giorno ${di + 1} · ${esc(d.label)}</h3>` : '';
+      return `${head}${items}`;
+    }).join('');
+    return blocks ? `<div class="visit-summary"><h2>Cosa visiterai</h2>${blocks}</div>` : '';
+  }
+
   // Costruisce le righe tabella di un giorno con orari reali via motore di scheduling.
   function pdfDayTable(d: TripDay): { rows: string; meta: string } {
     const stops = d.stops;
@@ -1021,8 +1052,12 @@
         : '';
 
       const cat = s.poi ? esc(catLabel(s.poi)) : '';
-      const visitTxt = isStop ? `${s.visit} min di visita` : (s.kind === 'start' ? 'partenza' : 'arrivo');
-      const addr = s.poi?.address ? `<div class="p-addr">📍 ${esc(s.poi.address)}</div>` : '';
+      const visitTxt = isStop
+        ? (s.mode === 'pass' ? 'solo passaggio · 1 min' : `${s.visit} min di visita`)
+        : (s.kind === 'start' ? 'partenza' : 'arrivo');
+      // mostra l'indirizzo per le tappe con indirizzo e SEMPRE per partenza/arrivo
+      const addr = (s.kind !== 'stop' || hasResolvedRef(s))
+        ? `<div class="p-addr">📍 ${esc(stopRef(s))}</div>` : '';
       const oh = s.poi?.openingHours ? `<div class="p-oh">🕒 ${esc(s.poi.openingHours)}</div>` : '';
       const fixed = s.fixedTime ? `<span class="p-fixed">orario fisso ${esc(s.fixedTime)}</span>` : '';
       const conflict = sc?.conflict ? `<span class="p-conflict">⚠ conflitto orario</span>` : '';
@@ -1114,17 +1149,32 @@
     .map-link a { color: #0B7A6F; text-decoration: none; }
     .foot-note { font-size: 11px; color: #666; margin-top: 30px; padding: 10px 12px; background: #f7f7f5; border-radius: 8px; line-height: 1.5; white-space: pre-wrap; }
     .foot-line { margin-top: 14px; font-size: 10.5px; color: #aaa; border-top: 1px solid #eee; padding-top: 8px; }
-    @media print { body { padding: 16px; } .day-block { page-break-inside: avoid; } a { color: #0B7A6F; } }
+    .visit-summary { margin-top: 30px; page-break-before: auto; }
+    .visit-summary > h2 { font-size: 20px; color: #0B7A6F; border-bottom: 2px solid #0B7A6F; padding-bottom: 6px; }
+    .vs-day { font-size: 15px; margin: 20px 0 10px; color: #1b2320; }
+    .vs-item { margin: 0 0 16px; page-break-inside: avoid; }
+    .vs-name { font-size: 14.5px; font-weight: 800; display: flex; align-items: baseline; gap: 8px; }
+    .vs-num { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; border-radius: 50%; background: #0B7A6F; color: #fff; font-size: 11px; font-weight: 800; }
+    .vs-cat { font-size: 11.5px; color: #888; margin: 2px 0 4px 28px; }
+    .vs-desc { font-size: 12.5px; line-height: 1.6; color: #333; margin-left: 28px; }
+    .vs-desc a { color: #0B7A6F; text-decoration: none; font-weight: 600; white-space: nowrap; }
+    .pdf-loading { font-family: sans-serif; color: #888; padding: 60px 20px; text-align: center; font-size: 15px; }
+    @media print { body { padding: 16px; } .day-block { page-break-inside: avoid; } .visit-summary { page-break-before: always; } a { color: #0B7A6F; } }
   `;
 
-  function openPrintWindow(title: string, bodyHtml: string) {
-    const html = `<!DOCTYPE html><html lang="it"><head><meta charset="utf-8">
-<title>${esc(title)}</title><style>${PDF_CSS}</style></head><body>${bodyHtml}</body></html>`;
+  function openPrintWindow(title: string): Window | null {
     const win = window.open('', '_blank', 'width=860,height=720');
-    if (!win) { showToast('Abilita i popup per esportare il PDF'); return; }
-    win.document.write(html);
+    if (!win) { showToast('Abilita i popup per esportare il PDF'); return null; }
+    win.document.write(`<!DOCTYPE html><html lang="it"><head><meta charset="utf-8"><title>${esc(title)}</title><style>${PDF_CSS}</style></head><body><div class="pdf-loading">Preparazione del documento…</div></body></html>`);
     win.document.close();
-    win.addEventListener('load', () => setTimeout(() => win.print(), 350));
+    return win;
+  }
+
+  function finalizePrint(win: Window, bodyHtml: string) {
+    win.document.open();
+    win.document.write(`<!DOCTYPE html><html lang="it"><head><meta charset="utf-8"><style>${PDF_CSS}</style></head><body>${bodyHtml}</body></html>`);
+    win.document.close();
+    setTimeout(() => { try { win.focus(); win.print(); } catch { /* utente chiuderà manualmente */ } }, 400);
   }
 
   function mapsLinkForStops(stops: Stop[]): string {
@@ -1132,10 +1182,15 @@
     return `https://www.google.com/maps/dir/${pts}`;
   }
 
-  function printTrip(tripId: string) {
+  async function printTrip(tripId: string) {
     const trip = trips.get(tripId);
     if (!trip) return;
     if (!trip.days.length) { showToast('Aggiungi almeno un giorno al viaggio'); return; }
+
+    const win = openPrintWindow(`${trip.name} — programma di viaggio`);
+    if (!win) return;
+    showToast('Preparo il PDF…');
+    await enrichForPdf(trip.days);
 
     // intervallo date del viaggio
     const dates = trip.days.map(d => d.date ?? d.departureAt?.slice(0, 10)).filter(Boolean) as string[];
@@ -1174,21 +1229,28 @@
         </div>
       </div>
       ${dayBlocks}
+      ${pdfVisitSummary(trip.days, true)}
       ${pdfFooter()}`;
 
-    openPrintWindow(`${trip.name} — programma di viaggio`, body);
+    finalizePrint(win, body);
   }
 
   // Esporta l'itinerario attualmente aperto come PDF di un singolo giorno.
-  function printCurrentItinerary() {
+  async function printCurrentItinerary() {
     if (!app.stops.length) { showToast('Genera prima un itinerario'); return; }
+    const win = openPrintWindow('Itinerario');
+    if (!win) return;
+    showToast('Preparo il PDF…');
+
     const label = app.editingDay?.label ?? 'Itinerario';
     const day: TripDay = {
       id: 'current', label,
-      stops: app.stops, minutes: app.minutes, mode: app.mode, cats: [...app.cats],
+      stops: [...app.stops], minutes: app.minutes, mode: app.mode, cats: [...app.cats],
       departureAt: app.departureAt || undefined,
       createdAt: Date.now(),
     };
+    await enrichForPdf([day]);
+
     const { rows, meta } = pdfDayTable(day);
     const dateStr = pdfDayDateLabel(day);
     const body = `
@@ -1201,8 +1263,9 @@
         <table>${rows}</table>
         <div class="map-link">🗺 <a href="${mapsLinkForStops(app.stops)}" target="_blank" rel="noopener">Apri il percorso su Google Maps</a></div>
       </div>
+      ${pdfVisitSummary([day], false)}
       ${pdfFooter()}`;
-    openPrintWindow(`${label} — itinerario`, body);
+    finalizePrint(win, body);
   }
 
   function loadDay(d: TripDay, tripId: string) {
@@ -1410,31 +1473,9 @@
       <!-- Orario di partenza -->
       <div class="section">
         <div class="label-sm">Quando parti?</div>
-        <div class="dep-row">
-          <button class="dep-opt {!app.departureAt ? 'on' : ''}"
-                  onclick={() => app.departureAt = ''}>
-            <i class="ti ti-bolt"></i> Adesso
-          </button>
-          <button class="dep-opt {fmtDepLabel(app.departureAt).startsWith('Oggi') ? 'on' : ''}"
-                  onclick={() => setDepAt(0, 9, 0)}>
-            <i class="ti ti-sun"></i> Oggi 9:00
-          </button>
-          <button class="dep-opt {fmtDepLabel(app.departureAt).startsWith('Domani') ? 'on' : ''}"
-                  onclick={() => setDepAt(1, 9, 0)}>
-            <i class="ti ti-sunrise"></i> Domani
-          </button>
-          <label class="dep-opt dep-opt--pick {app.departureAt && !fmtDepLabel(app.departureAt).match(/^(Oggi|Domani)/) ? 'on' : ''}">
-            <i class="ti ti-calendar-time"></i>
-            <span>{app.departureAt ? fmtDepLabel(app.departureAt) : 'Scegli data'}</span>
-            <input type="datetime-local"
-                   value={app.departureAt}
-                   oninput={e => app.departureAt = (e.target as HTMLInputElement).value} />
-          </label>
-        </div>
+        <DepartureEditor />
         {#if app.departureAt && app.mode === 'transit'}
         <p class="dep-hint dep-hint--transit"><i class="ti ti-info-circle"></i> Con i mezzi gli orari sono stime. Verifica sempre in app.</p>
-        {:else if app.departureAt}
-        <p class="dep-hint">Ogni tappa avrà il suo orario. Affinalo poi con <strong>Pianifica orari</strong>.</p>
         {/if}
       </div>
 
@@ -1601,6 +1642,20 @@
       </div>
       {/if}
 
+      <!-- Orario di partenza (sempre visibile, modificabile qui) -->
+      {#if app.stops.length}
+      <div class="dep-inline">
+        <span class="dep-inline-title"><i class="ti ti-clock-hour-4"></i> Orario di partenza</span>
+        <DepartureEditor />
+        {#if app.departureAt && scheduleEnd}
+        <div class="dep-inline-recap">
+          <i class="ti ti-flag-filled"></i> fine prevista <strong>{fmtClock(scheduleEnd)}</strong> · durata {fmtHours(scheduleSpan)}
+          {#if scheduleConflicts}<span class="dep-inline-warn">· {scheduleConflicts} conflitti orari</span>{/if}
+        </div>
+        {/if}
+      </div>
+      {/if}
+
       {#if !app.stops.length}
       <!-- Empty state -->
       <div class="empty-state">
@@ -1687,7 +1742,7 @@
                 </div>
                 <div class="tl-meta">
                   {#if isStop}
-                    {s.visit} min di visita
+                    {#if s.mode === 'pass'}Solo passaggio · 1 min{:else}{s.visit} min di visita{/if}
                     {#if oh === 'closed'}<span class="tl-closed">· Chiuso ora</span>
                     {:else if oh === 'open'}<span class="tl-open">· Aperto ora</span>{/if}
                   {:else if s.kind === 'start'}
@@ -1725,12 +1780,32 @@
             <!-- azioni tappa selezionata -->
             {#if isStop && i === app.focusIdx}
             <div class="tl-stop-actions">
-              <!-- Stepper durata sosta -->
+              <!-- Stepper durata sosta (solo per le tappe da visitare) -->
+              {#if s.mode !== 'pass'}
               <div class="tl-stepper">
                 <button class="tl-stepper-btn" onclick={e => { e.stopPropagation(); changeStopVisit(i, -15); }}>−</button>
                 <span class="tl-stepper-val"><i class="ti ti-clock-hour-4"></i> {s.visit} min</span>
                 <button class="tl-stepper-btn" onclick={e => { e.stopPropagation(); changeStopVisit(i, +15); }}>+</button>
               </div>
+              {:else}
+              <span class="tl-pass-note"><i class="ti ti-eye"></i> Solo passaggio · 1 min</span>
+              {/if}
+
+              <!-- Orario fisso (prenotazione/apertura) — solo con partenza impostata -->
+              {#if app.departureAt}
+              <label class="tl-fixed {s.fixedTime ? 'on' : ''}">
+                <i class="ti ti-pin"></i>
+                {s.fixedTime ? s.fixedTime : 'fissa orario'}
+                <input type="time" value={s.fixedTime ?? ''}
+                       onclick={e => e.stopPropagation()}
+                       oninput={e => { e.stopPropagation(); app.setStopFixedTime(i, (e.target as HTMLInputElement).value); }} />
+              </label>
+              {#if s.fixedTime}
+              <button class="tl-action-btn" onclick={e => { e.stopPropagation(); app.setStopFixedTime(i, ''); }}>
+                <i class="ti ti-x"></i> Libera orario
+              </button>
+              {/if}
+              {/if}
 
               {#if s.poi?.address}
               <span class="tl-addr"><i class="ti ti-map-pin"></i> {s.poi.address}</span>
@@ -1769,10 +1844,6 @@
       <div class="rfoot">
         <button class="btn btn-primary btn-block" onclick={startNav}>
           <i class="ti ti-navigation"></i>Avvia il giro
-        </button>
-        <button class="btn btn-outline btn-block" onclick={openPlanner}>
-          <i class="ti ti-clock-edit"></i>
-          {app.departureAt ? `Pianifica orari · ${fmtDepLabel(app.departureAt)}` : 'Pianifica orari'}
         </button>
         <div class="rfoot-row">
           {#if app.editingDay}
@@ -2172,145 +2243,6 @@
         <p>Nessun itinerario con data. Assegna una data ai giorni dei tuoi viaggi per vederli qui.</p>
       </div>
       {/if}
-    </section>
-    {/if}
-
-    <!-- ══════════ SCHEDULE (planner orari step-by-step) ═══════ -->
-    {#if app.screen === 'schedule'}
-    <section class="screen" in:fly={{ y: 10, duration: 220 }}>
-      <div class="edit-head">
-        <button class="rhead-icon" aria-label="indietro" onclick={() => showScreen('route')}>
-          <i class="ti ti-chevron-left"></i>
-        </button>
-        <span class="edit-title"><i class="ti ti-clock-edit"></i> Pianifica orari</span>
-        <button class="rhead-icon" aria-label="impostazioni agenzia" onclick={() => showScreen('settings')}>
-          <i class="ti ti-settings"></i>
-        </button>
-      </div>
-
-      <!-- Partenza -->
-      <div class="plan-dep">
-        <div class="plan-dep-head">
-          <span class="label-sm">Partenza</span>
-          <span class="plan-dep-presets">
-            <button class="plan-chip" onclick={setDepNow}>Adesso</button>
-            <button class="plan-chip" onclick={() => setDepAt(0, 9)}>Oggi 9:00</button>
-            <button class="plan-chip" onclick={() => setDepAt(1, 9)}>Domani 9:00</button>
-          </span>
-        </div>
-        <label class="plan-dep-field">
-          <i class="ti ti-calendar-time"></i>
-          <input type="datetime-local" value={app.departureAt}
-                 oninput={e => app.departureAt = (e.target as HTMLInputElement).value} />
-        </label>
-      </div>
-
-      <!-- Riepilogo programma -->
-      {#if schedule}
-      <div class="plan-summary {scheduleConflicts ? 'plan-summary--warn' : ''}">
-        <div class="plan-summary-item">
-          <span class="plan-summary-val">{fmtClock(new Date(app.departureAt).getTime())}</span>
-          <span class="plan-summary-lbl">inizio</span>
-        </div>
-        <i class="ti ti-arrow-right"></i>
-        <div class="plan-summary-item">
-          <span class="plan-summary-val">{scheduleEnd ? fmtClock(scheduleEnd) : '—'}</span>
-          <span class="plan-summary-lbl">fine</span>
-        </div>
-        <div class="plan-summary-item">
-          <span class="plan-summary-val">{fmtHours(scheduleSpan)}</span>
-          <span class="plan-summary-lbl">durata</span>
-        </div>
-        {#if scheduleConflicts}
-        <div class="plan-summary-item plan-summary-conflict">
-          <span class="plan-summary-val">{scheduleConflicts}</span>
-          <span class="plan-summary-lbl">conflitti</span>
-        </div>
-        {/if}
-      </div>
-
-      <!-- Buffer transfer -->
-      <div class="plan-buffer">
-        <span><i class="ti ti-hourglass"></i> Margine tra le tappe (transfer)</span>
-        <div class="plan-buffer-ctrl">
-          <button class="tl-stepper-btn" onclick={() => { settings.bufferMin = Math.max(0, settings.bufferMin - 5); settings.save(); }}>−</button>
-          <span class="plan-buffer-val">{settings.bufferMin} min</span>
-          <button class="tl-stepper-btn" onclick={() => { settings.bufferMin = Math.min(60, settings.bufferMin + 5); settings.save(); }}>+</button>
-        </div>
-      </div>
-      {/if}
-
-      <!-- Lista step -->
-      <div class="plan-list">
-        {#each app.stops as s, i}
-        {@const sc = schedule?.[i]}
-        {@const isStop = s.kind === 'stop'}
-        {@const closed = closedAtScheduled(i)}
-        {#if i > 0 && (s.walkMin ?? 0) > 0}
-        <div class="plan-leg"><i class="ti {app.mode === 'transit' && legTransitAvail[i] === false ? 'ti-walk' : modeIcon}"></i> {s.walkMin} min{#if settings.bufferMin > 0} + {settings.bufferMin} buffer{/if}</div>
-        {/if}
-        <div class="plan-step {sc?.conflict ? 'plan-step--conflict' : ''}">
-          <div class="plan-step-time">
-            {#if sc}
-              <span class="plan-step-arr">{fmtClock(sc.arrival)}</span>
-              {#if isStop}<span class="plan-step-dep">{fmtClock(sc.departure)}</span>{/if}
-            {:else}<span class="plan-step-arr">—</span>{/if}
-          </div>
-          <div class="plan-step-rail">
-            <span class="tl-dot {s.kind}" style={isStop ? `background:${catColor(s.poi)}` : ''}>
-              {#if s.kind === 'start'}<i class="ti ti-map-pin-filled"></i>
-              {:else if s.kind === 'end'}<i class="ti ti-flag-filled"></i>
-              {:else}{app.stops.slice(0, i + 1).filter(x => x.kind === 'stop').length}{/if}
-            </span>
-          </div>
-          <div class="plan-step-body">
-            <div class="plan-step-name">{s.name}</div>
-            <div class="plan-step-tags">
-              {#if sc && sc.waitMin > 0}<span class="plan-tag plan-tag--wait">attesa {sc.waitMin}m</span>{/if}
-              {#if sc?.conflict}<span class="plan-tag plan-tag--conflict">⚠ orario non rispettabile</span>{/if}
-              {#if closed}<span class="plan-tag plan-tag--closed">chiuso a quest'ora</span>{/if}
-            </div>
-
-            {#if isStop}
-            <div class="plan-step-controls">
-              <!-- durata -->
-              <div class="tl-stepper">
-                <button class="tl-stepper-btn" onclick={() => changeStopVisit(i, -15)}>−</button>
-                <span class="tl-stepper-val"><i class="ti ti-clock-hour-4"></i> {s.visit}m</span>
-                <button class="tl-stepper-btn" onclick={() => changeStopVisit(i, +15)}>+</button>
-              </div>
-              <!-- orario fisso -->
-              <label class="plan-fixed {s.fixedTime ? 'on' : ''}">
-                <i class="ti ti-pin"></i>
-                {#if s.fixedTime}{s.fixedTime}{:else}fissa orario{/if}
-                <input type="time" value={s.fixedTime ?? ''}
-                       oninput={e => app.setStopFixedTime(i, (e.target as HTMLInputElement).value)} />
-              </label>
-              {#if s.fixedTime}
-              <button class="plan-fixed-clear" aria-label="rimuovi orario fisso"
-                      onclick={() => app.setStopFixedTime(i, '')}><i class="ti ti-x"></i></button>
-              {/if}
-            </div>
-            {/if}
-          </div>
-        </div>
-        {/each}
-      </div>
-
-      <div class="rfoot">
-        {#if app.editingDay}
-        <button class="btn btn-save btn-block" onclick={updateCurrentDay}>
-          <i class="ti ti-device-floppy"></i> Salva orari nel viaggio
-        </button>
-        {:else}
-        <button class="btn btn-primary btn-block" onclick={openSaveSheet}>
-          <i class="ti ti-bookmark"></i> Salva nel viaggio
-        </button>
-        {/if}
-        <button class="btn btn-outline btn-block" onclick={printCurrentItinerary}>
-          <i class="ti ti-file-type-pdf"></i> Esporta questo giorno in PDF
-        </button>
-      </div>
     </section>
     {/if}
 

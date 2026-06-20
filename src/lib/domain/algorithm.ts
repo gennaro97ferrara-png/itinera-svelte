@@ -93,7 +93,9 @@ export function catLabel(p: POI): string {
 }
 
 export function countedVisit(s: Stop): number {
-  return s.kind === 'stop' && s.mode !== 'visit' ? 0 : (s.visit ?? 0);
+  // tappa di solo passaggio (nessuna visita): conta 1 minuto, il tempo di transito
+  if (s.kind === 'stop' && s.mode !== 'visit') return 1;
+  return s.visit ?? 0;
 }
 
 export interface GenerateParams {
