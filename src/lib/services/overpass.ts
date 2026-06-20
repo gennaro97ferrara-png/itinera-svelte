@@ -1,4 +1,4 @@
-import type { POI } from '$lib/domain/types';
+import type { POI, Bounds } from '$lib/domain/types';
 
 // Endpoint con fallback: si prova il primo, se fallisce/è lento si passa al successivo
 const ENDPOINTS = [
@@ -32,6 +32,13 @@ const CAT_FILTERS: Record<string, { f: string; types: string[] }[]> = {
   street:     [{ f: '["amenity"="fast_food"]',                       types: ['node'] },
                { f: '["amenity"="food_court"]',                      types: ['node'] }],
   caffe:      [{ f: '["amenity"="cafe"]',                            types: ['node'] }],
+  bar:        [{ f: '["amenity"="bar"]',                             types: ['node', 'way'] }],
+  pub:        [{ f: '["amenity"="pub"]',                             types: ['node', 'way'] }],
+  cocktail:   [{ f: '["amenity"="bar"]["cocktails"~"yes",i]',        types: ['node'] },
+               { f: '["amenity"="bar"]["drink:cocktail"~"yes",i]',   types: ['node'] }],
+  discoteche: [{ f: '["amenity"="nightclub"]',                       types: ['node', 'way'] },
+               { f: '["leisure"="dance"]',                           types: ['node', 'way'] }],
+  livemusic:  [{ f: '["amenity"~"nightclub|bar|pub"]["live_music"~"yes",i]', types: ['node'] }],
   teatri:     [{ f: '["amenity"="theatre"]',                         types: ['node', 'way'] }],
   piazze:     [{ f: '["place"="square"]',                            types: ['node', 'way', 'relation'] }],
   parchi:     [{ f: '["leisure"="park"]',                            types: ['way', 'relation'] },
@@ -58,6 +65,8 @@ const VISIT_DEF: Record<string, number> = {
   monumenti: 15, storico: 10, arte: 8, piazze: 12, panorami: 10, mercati: 20, spiagge: 40,
   // cibo
   ristoranti: 70, pizza: 40, panini: 15, gelati: 12, street: 20, caffe: 18,
+  // vita notturna
+  bar: 30, pub: 45, cocktail: 40, discoteche: 90, livemusic: 60,
   // servizi: tappe di utilità (nessun tempo di visita)
   toilets: 0, acqua: 0, farmacie: 0, bancomat: 0
 };
@@ -65,6 +74,7 @@ const VISIT_DEF: Record<string, number> = {
 const MACRO_MAP: Record<string, string> = {
   musei: 'cultura', monumenti: 'cultura', storico: 'cultura', arte: 'cultura', chiese: 'cultura', teatri: 'cultura',
   ristoranti: 'cibo', pizza: 'cibo', panini: 'cibo', gelati: 'cibo', street: 'cibo', caffe: 'cibo',
+  bar: 'notturna', pub: 'notturna', cocktail: 'notturna', discoteche: 'notturna', livemusic: 'notturna',
   piazze: 'luoghi', parchi: 'luoghi', panorami: 'luoghi', mercati: 'luoghi', spiagge: 'luoghi',
   toilets: 'servizi', acqua: 'servizi', farmacie: 'servizi', bancomat: 'servizi'
 };
@@ -87,6 +97,23 @@ function buildQuery(cats: string[], lat: number, lng: number, radius: number): s
     });
   });
   lines.push(');', 'out center tags 120;');
+  return lines.join('\n');
+}
+
+// Variante con riquadro geografico (south,west,north,east) per la selezione di un'area.
+function buildBboxQuery(cats: string[], s: number, w: number, n: number, e: number): string {
+  const bbox = `${s.toFixed(5)},${w.toFixed(5)},${n.toFixed(5)},${e.toFixed(5)}`;
+  const lines = ['[out:json][timeout:18];', '('];
+  const seen = new Set<string>();
+  cats.forEach(cat => {
+    (CAT_FILTERS[cat] ?? []).forEach(entry => {
+      entry.types.forEach(type => {
+        const line = `  ${type}${entry.f}(${bbox});`;
+        if (!seen.has(line)) { seen.add(line); lines.push(line); }
+      });
+    });
+  });
+  lines.push(');', 'out center tags 200;');
   return lines.join('\n');
 }
 
@@ -123,6 +150,11 @@ function detectSubs(tags: any): string[] {
   if (sh === 'sandwich') subs.push('panini');
   if (a === 'ice_cream' || sh === 'ice_cream' || cuisine.includes('ice_cream')) subs.push('gelati');
   if (a === 'cafe')      subs.push('caffe');
+  if (a === 'bar')       subs.push('bar');
+  if (a === 'pub')       subs.push('pub');
+  if (a === 'nightclub' || l === 'dance') subs.push('discoteche');
+  if (a === 'bar' && /yes|true/i.test(tags.cocktails ?? tags['drink:cocktail'] ?? '')) subs.push('cocktail');
+  if (/yes|true|live/i.test(tags.live_music ?? '')) subs.push('livemusic');
   if (a === 'theatre')   subs.push('teatri');
   if (p === 'square')    subs.push('piazze');
   if (l === 'park' || l === 'garden') subs.push('parchi');
@@ -209,6 +241,9 @@ function buildStory(tags: any, name: string): string {
     return cui ? `Cucina ${cui} — una sosta per mangiare.` : 'Una tappa per mangiare lungo il cammino.';
   }
   if (a === 'cafe')      return 'Caffè per una pausa veloce.';
+  if (a === 'bar')       return 'Bar per un drink e due chiacchiere.';
+  if (a === 'pub')       return 'Pub dove fermarsi per una birra.';
+  if (a === 'nightclub' || l === 'dance') return 'Locale notturno per ballare fino a tardi.';
   if (a === 'theatre')   return `Teatro${epochSuffix}${heritage}.`;
   if (a === 'marketplace') return 'Mercato cittadino tra le bancarelle.';
   if (tags.natural === 'beach') return 'Spiaggia per una pausa vista mare.';
@@ -332,6 +367,27 @@ export async function fetchPois(
       return pois;
     } catch (e) {
       lastErr = e;   // prova l'endpoint successivo
+    }
+  }
+  throw lastErr ?? new Error('Overpass non raggiungibile');
+}
+
+// POI dentro un riquadro disegnato sulla mappa (selezione area).
+export async function fetchPoisInArea(bounds: Bounds, cats: string[]): Promise<POI[]> {
+  const { south, west, north, east } = bounds;
+  const key = `bbox:${south.toFixed(3)},${west.toFixed(3)},${north.toFixed(3)},${east.toFixed(3)},${[...cats].sort().join(',')}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+
+  const query = buildBboxQuery(cats, south, west, north, east);
+  let lastErr: unknown;
+  for (const endpoint of ENDPOINTS) {
+    try {
+      const pois = dedupe(await fetchFrom(endpoint, query));
+      cache.set(key, pois);
+      return pois;
+    } catch (e) {
+      lastErr = e;
     }
   }
   throw lastErr ?? new Error('Overpass non raggiungibile');

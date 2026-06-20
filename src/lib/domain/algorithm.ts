@@ -1,4 +1,4 @@
-import type { POI, Stop, LatLng } from './types';
+import type { POI, Stop, LatLng, NamedPoint, TravelMode } from './types';
 import { VISIT_DEFAULTS, SUBS } from './categories';
 
 export const ROME: LatLng = { lat: 41.8986, lng: 12.4769 };
@@ -21,7 +21,19 @@ export function haversine(a: LatLng, b: LatLng): number {
   return 2 * R * Math.asin(Math.sqrt(s));
 }
 
-export function walkMin(meters: number): number { return meters / 90; }
+// Velocità media per mezzo, in metri al minuto (stima a linea d'aria).
+//  walk ~4,8 km/h · bike ~15 km/h · car ~30 km/h urbana · transit ~18 km/h effettivi
+export const SPEED_MPM: Record<TravelMode, number> = {
+  walk: 80, bike: 250, car: 500, transit: 300,
+};
+
+/** Minuti di spostamento per `meters` con il mezzo scelto (default: a piedi). */
+export function travelMin(meters: number, mode: TravelMode = 'walk'): number {
+  return meters / SPEED_MPM[mode];
+}
+
+/** Alias storico: minuti a piedi. */
+export function walkMin(meters: number): number { return travelMin(meters, 'walk'); }
 
 /** Direzione bussola (gradi 0–360, 0 = Nord) da `a` verso `b`. */
 export function bearing(a: LatLng, b: LatLng): number {
@@ -71,38 +83,39 @@ export interface GenerateParams {
   minutes: number;
   cats: string[];
   roundTrip: boolean;
-  startId: string;
-  endId: string;
+  startPoint: NamedPoint | null;
+  endPoint: NamedPoint | null;
   user: LatLng | null;
   allPois: POI[];
+  mode?: TravelMode;
 }
 
 export function generate(p: GenerateParams): Stop[] {
-  const { minutes, cats, roundTrip, startId, endId, user, allPois } = p;
+  const { minutes, cats, roundTrip, startPoint, endPoint, user, allPois, mode = 'walk' } = p;
 
-  const byId = (id: string) => id ? (allPois.find(x => x.id === id) ?? null) : null;
-  const startPoi = byId(startId);
-  const endPoi   = byId(endId);
-  const hasDest  = !!endPoi && (!startPoi || endPoi.id !== startPoi.id);
-  const loop     = hasDest ? false : roundTrip;
-  const start: LatLng = startPoi ?? user ?? ROME;
+  // minuti di spostamento tra due punti col mezzo scelto
+  const leg = (a: LatLng, b: LatLng) => travelMin(haversine(a, b), mode);
+
+  const hasDest = !!endPoint;
+  const loop    = hasDest ? false : roundTrip;
+  const start: LatLng = startPoint ?? user ?? ROME;
   const end: LatLng | null = hasDest
-    ? { lat: endPoi!.lat, lng: endPoi!.lng }
+    ? { lat: endPoint!.lat, lng: endPoint!.lng }
     : loop ? start : null;
 
-  const pool = allPois.filter(x => matches(x, cats) && x.id !== startId && x.id !== endId);
+  const pool = allPois.filter(x => matches(x, cats));
 
-  const MAX = 8;
+  const MAX = 14;
   let remaining = [...pool], chosen: POI[] = [], cur: LatLng = start;
-  let used = effVisit(startPoi) + (endPoi ? effVisit(endPoi) : 0);
+  let used = 0;
 
   while (remaining.length && chosen.length < MAX) {
     let best: POI | null = null, bestCost = Infinity;
-    const baseLeg = end ? walkMin(haversine(cur, end)) : 0;
+    const baseLeg = end ? leg(cur, end) : 0;
 
     for (const c of remaining) {
-      const legIn  = walkMin(haversine(cur, c));
-      const legOut = end ? walkMin(haversine(c, end)) : 0;
+      const legIn  = leg(cur, c);
+      const legOut = end ? leg(c, end) : 0;
       if (used + legIn + effVisit(c) + legOut <= minutes) {
         // preferisci la tappa più vicina, con bonus per i luoghi più rilevanti
         const relevance = (c.score ?? 0) / 20 + (isGem(c) ? 1 : 0);
@@ -112,7 +125,7 @@ export function generate(p: GenerateParams): Stop[] {
     }
 
     if (!best) break;
-    used += walkMin(haversine(cur, best)) + effVisit(best);
+    used += leg(cur, best) + effVisit(best);
     chosen.push(best);
     cur = { lat: best.lat, lng: best.lng };
     remaining.splice(remaining.indexOf(best), 1);
@@ -122,10 +135,10 @@ export function generate(p: GenerateParams): Stop[] {
 
   stops.push({
     kind: 'start',
-    name: startPoi?.name ?? 'La tua posizione',
+    name: startPoint?.name ?? 'La tua posizione',
     lat: start.lat, lng: start.lng,
-    poi: startPoi, visit: effVisit(startPoi),
-    mode: 'visit', gem: isGem(startPoi)
+    poi: null, visit: 0,
+    mode: 'visit', gem: false
   });
 
   let prev: LatLng = start;
@@ -134,7 +147,7 @@ export function generate(p: GenerateParams): Stop[] {
       kind: 'stop', name: c.name,
       lat: c.lat, lng: c.lng, poi: c,
       visit: effVisit(c), mode: 'visit', gem: isGem(c),
-      walkMin: Math.round(walkMin(haversine(prev, c)))
+      walkMin: Math.round(leg(prev, c))
     });
     prev = { lat: c.lat, lng: c.lng };
   }
@@ -142,11 +155,11 @@ export function generate(p: GenerateParams): Stop[] {
   if (end) {
     stops.push({
       kind: 'end',
-      name: endPoi?.name ?? 'Ritorno alla partenza',
+      name: endPoint?.name ?? 'Ritorno alla partenza',
       lat: end.lat, lng: end.lng,
-      poi: endPoi ?? null,
-      visit: effVisit(endPoi), mode: 'visit', gem: isGem(endPoi),
-      walkMin: Math.round(walkMin(haversine(prev, end)))
+      poi: null,
+      visit: 0, mode: 'visit', gem: false,
+      walkMin: Math.round(leg(prev, end))
     });
   }
 

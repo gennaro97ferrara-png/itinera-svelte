@@ -24,6 +24,13 @@ export const MACROS: MacroCategory[] = [
     { id: 'mercati',  label: 'Mercati',  icon: 'ti-basket' },
     { id: 'spiagge',  label: 'Spiagge',  icon: 'ti-beach' }
   ]},
+  { id: 'notturna', label: 'Vita notturna', icon: 'ti-moon-stars', subs: [
+    { id: 'bar',        label: 'Bar',         icon: 'ti-glass' },
+    { id: 'pub',        label: 'Pub',         icon: 'ti-beer' },
+    { id: 'cocktail',   label: 'Cocktail',    icon: 'ti-glass-cocktail' },
+    { id: 'discoteche', label: 'Discoteche',  icon: 'ti-disc' },
+    { id: 'livemusic',  label: 'Musica live', icon: 'ti-music' }
+  ]},
   { id: 'servizi', label: 'Servizi', icon: 'ti-toilet-paper', subs: [
     { id: 'toilets',  label: 'Bagni pubblici',  icon: 'ti-toilet-paper' },
     { id: 'acqua',    label: 'Acqua potabile',  icon: 'ti-droplet' },
@@ -40,5 +47,6 @@ export const VISIT_DEFAULTS: Record<string, number> = {
   musei: 120, monumenti: 60, storico: 45, arte: 15, chiese: 20, teatri: 15,
   ristoranti: 60, pizza: 20, panini: 15, gelati: 10, street: 15, caffe: 10,
   piazze: 15, parchi: 30, panorami: 15, mercati: 25, spiagge: 40,
+  bar: 30, pub: 45, cocktail: 40, discoteche: 90, livemusic: 60,
   toilets: 0, acqua: 0, farmacie: 0, bancomat: 0
 };

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { browser } from '$app/environment';
   import { app } from '$lib/stores/app.svelte';
+  import type { LatLng, Bounds } from '$lib/domain/types';
 
   let mapEl: HTMLDivElement;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -100,6 +101,84 @@
   export function moveTo(lat: number, lng: number, zoom = 14) {
     if (!ready) return;
     map.setView([lat, lng], zoom);
+  }
+
+  // ── Selezione di un punto: il prossimo tap sulla mappa lo restituisce ──
+  export function pickPoint(): Promise<LatLng | null> {
+    return new Promise((resolve) => {
+      if (!ready) { resolve(null); return; }
+      mapEl.style.cursor = 'crosshair';
+      const onClick = (e: any) => {
+        map.off('click', onClick);
+        mapEl.style.cursor = '';
+        resolve({ lat: e.latlng.lat, lng: e.latlng.lng });
+      };
+      map.on('click', onClick);
+    });
+  }
+
+  // ── Selezione di un'area: trascina per disegnare un riquadro ──
+  export function pickArea(): Promise<Bounds | null> {
+    return new Promise((resolve) => {
+      if (!ready) { resolve(null); return; }
+      map.dragging.disable();
+      mapEl.style.cursor = 'crosshair';
+      let startLL: any = null;
+      let rect: any = null;
+
+      const toLL = (ev: MouseEvent | TouchEvent) => {
+        const pt: any = 'touches' in ev
+          ? (ev.touches[0] ?? (ev as TouchEvent).changedTouches[0])
+          : ev;
+        const box = mapEl.getBoundingClientRect();
+        return map.containerPointToLatLng([pt.clientX - box.left, pt.clientY - box.top]);
+      };
+
+      const move = (ev: MouseEvent | TouchEvent) => {
+        if (!startLL || !rect) return;
+        ev.preventDefault();
+        rect.setBounds(L.latLngBounds(startLL, toLL(ev)));
+      };
+
+      const cleanup = () => {
+        mapEl.removeEventListener('mousedown', down);
+        mapEl.removeEventListener('touchstart', down);
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('touchmove', move);
+        window.removeEventListener('mouseup', up);
+        window.removeEventListener('touchend', up);
+        map.dragging.enable();
+        mapEl.style.cursor = '';
+      };
+
+      const up = () => {
+        cleanup();
+        if (!rect || !startLL) { resolve(null); return; }
+        const b = rect.getBounds();
+        rect.remove();
+        const sw = b.getSouthWest(), ne = b.getNorthEast();
+        // riquadro troppo piccolo → annullato
+        if (Math.abs(ne.lat - sw.lat) < 1e-4 && Math.abs(ne.lng - sw.lng) < 1e-4) {
+          resolve(null); return;
+        }
+        resolve({ south: sw.lat, west: sw.lng, north: ne.lat, east: ne.lng });
+      };
+
+      const down = (ev: MouseEvent | TouchEvent) => {
+        ev.preventDefault();
+        startLL = toLL(ev);
+        rect = L.rectangle([startLL, startLL], {
+          color: '#0e7c6b', weight: 2, dashArray: '5 5', fillOpacity: .08
+        }).addTo(map);
+        window.addEventListener('mousemove', move, { passive: false });
+        window.addEventListener('touchmove', move, { passive: false });
+        window.addEventListener('mouseup', up);
+        window.addEventListener('touchend', up);
+      };
+
+      mapEl.addEventListener('mousedown', down);
+      mapEl.addEventListener('touchstart', down, { passive: false });
+    });
   }
 </script>
 

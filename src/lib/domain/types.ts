@@ -43,7 +43,24 @@ export interface LatLng {
   lng: number;
 }
 
-export type Screen = 'home' | 'route' | 'detail' | 'nav';
+/** Punto di partenza/arrivo scelto liberamente (mappa, posizione, tappa). */
+export interface NamedPoint {
+  lat: number;
+  lng: number;
+  name: string;
+}
+
+/** Riquadro geografico (per la selezione di un'area sulla mappa). */
+export interface Bounds {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+}
+
+export type TravelMode = 'walk' | 'bike' | 'car' | 'transit';
+
+export type Screen = 'home' | 'route' | 'detail' | 'nav' | 'trips' | 'trip';
 
 export interface MacroCategory {
   id: string;

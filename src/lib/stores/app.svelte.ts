@@ -1,4 +1,4 @@
-import type { Screen, Stop, POI, LatLng } from '$lib/domain/types';
+import type { Screen, Stop, POI, LatLng, NamedPoint, TravelMode } from '$lib/domain/types';
 
 class AppStore {
   // navigation — si parte dal risultato (auto-generato al boot), non dal form
@@ -7,14 +7,20 @@ class AppStore {
   // time budget
   minutes = $state(210);
 
+  // mezzo di spostamento
+  mode = $state<TravelMode>('walk');
+
   // categories (array, toggled via helpers)
   cats = $state<string[]>(['musei', 'monumenti', 'storico', 'arte', 'chiese']);
 
   // trip options
-  roundTrip = $state(true);
-  startId   = $state('');
-  endId     = $state('');
-  loop      = $state(true);
+  roundTrip  = $state(true);
+  startPoint = $state<NamedPoint | null>(null);
+  endPoint   = $state<NamedPoint | null>(null);
+  loop       = $state(true);
+
+  // organizer viaggio: viaggio attualmente aperto nella schermata 'trip'
+  currentTripId = $state<string | null>(null);
 
   // geolocation
   user = $state<LatLng | null>(null);
