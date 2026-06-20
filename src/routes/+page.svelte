@@ -888,104 +888,6 @@
         {/if}
       </header>
 
-      <!-- Barra Da → A con ricerca inline -->
-      <div class="od-bar" class:od-bar--searching={odSearchActive}>
-
-        <!-- Partenza -->
-        <div class="od-bar-row">
-          {#if odSearchActive === 'start'}
-          <span class="od-bar-dot od-bar-dot--start"></span>
-          <input class="od-search-input" type="text" placeholder="Cerca partenza…"
-                 value={odQuery}
-                 oninput={e => onOdQueryInput((e.target as HTMLInputElement).value)}
-                 use:focusEl />
-          <button class="od-bar-clear" aria-label="chiudi" onclick={closeOdSearch}>
-            <i class="ti ti-x"></i>
-          </button>
-          {:else}
-          <div class="od-bar-point" role="button" tabindex="0"
-               onclick={() => openOdSearch('start')}
-               onkeydown={e => e.key === 'Enter' && openOdSearch('start')}
-               aria-label="modifica partenza">
-            <span class="od-bar-dot od-bar-dot--start"></span>
-            <div class="od-bar-text">
-              <span class="od-bar-label">Da</span>
-              <span class="od-bar-val">{app.startPoint?.name ?? 'La mia posizione'}</span>
-            </div>
-          </div>
-          {#if app.startPoint}
-          <button class="od-bar-clear" aria-label="usa posizione" onclick={useMyLocationAsStart}>
-            <i class="ti ti-x"></i>
-          </button>
-          {/if}
-          {/if}
-        </div>
-
-        <!-- Risultati ricerca -->
-        {#if odSearchActive}
-        <div class="od-results">
-          <button class="od-result od-result--location" onclick={selectMyLocation}>
-            <i class="ti ti-current-location"></i>
-            <span>La mia posizione attuale</span>
-          </button>
-          {#if odSearching}
-          <div class="od-result od-result--hint"><i class="ti ti-loader-2 spin"></i> Cerco…</div>
-          {:else if odResults.length === 0 && odQuery.length >= 2}
-          <div class="od-result od-result--hint">Nessun risultato</div>
-          {:else}
-          {#each odResults as r}
-          <button class="od-result" onclick={() => selectGeoResult(r)}>
-            <i class="ti ti-map-pin"></i>
-            <div class="od-result-text">
-              <span class="od-result-name">{r.name}</span>
-              <span class="od-result-detail">{r.detail}</span>
-            </div>
-          </button>
-          {/each}
-          {/if}
-        </div>
-        {/if}
-
-        {#if !odSearchActive}
-        <div class="od-bar-sep">
-          <span class="od-bar-line"></span>
-          <i class="ti ti-arrow-down od-bar-arrow"></i>
-          <span class="od-bar-line"></span>
-        </div>
-
-        <!-- Destinazione -->
-        <div class="od-bar-row">
-          {#if odSearchActive === 'end'}
-          <span class="od-bar-dot od-bar-dot--end"></span>
-          <input class="od-search-input" type="text" placeholder="Cerca destinazione…"
-                 value={odQuery}
-                 oninput={e => onOdQueryInput((e.target as HTMLInputElement).value)}
-                 use:focusEl />
-          <button class="od-bar-clear" aria-label="chiudi" onclick={closeOdSearch}>
-            <i class="ti ti-x"></i>
-          </button>
-          {:else}
-          <div class="od-bar-point" role="button" tabindex="0"
-               onclick={() => openOdSearch('end')}
-               onkeydown={e => e.key === 'Enter' && openOdSearch('end')}
-               aria-label="modifica destinazione">
-            <span class="od-bar-dot od-bar-dot--end"></span>
-            <div class="od-bar-text">
-              <span class="od-bar-label">A</span>
-              <span class="od-bar-val">{app.endPoint?.name ?? 'Aggiungi destinazione…'}</span>
-            </div>
-          </div>
-          {#if app.endPoint}
-          <button class="od-bar-clear" aria-label="rimuovi destinazione" onclick={() => { clearDest(); onGenerate(); }}>
-            <i class="ti ti-x"></i>
-          </button>
-          {/if}
-          {/if}
-        </div>
-        {/if}
-
-      </div>
-
       {#if !app.stops.length}
       <!-- Empty state -->
       <div class="empty-state">
@@ -1015,8 +917,18 @@
             ondragleave={onDragLeave}
             ondrop={e => onDrop(e, i)}
             ondragend={onDragEnd}
-            onclick={() => isStop ? onCardTap(i, s) : (s.poi && openDetail(s.poi))}
-            onkeydown={e => e.key === 'Enter' && s.poi && openDetail(s.poi)}
+            onclick={() => {
+              if (isStop) { onCardTap(i, s); return; }
+              if (s.kind === 'start') { openOdSearch('start'); return; }
+              if (s.kind === 'end')   { openOdSearch('end');   return; }
+              if (s.poi) openDetail(s.poi);
+            }}
+            onkeydown={e => {
+              if (e.key !== 'Enter') return;
+              if (s.kind === 'start') { openOdSearch('start'); return; }
+              if (s.kind === 'end')   { openOdSearch('end');   return; }
+              if (s.poi) openDetail(s.poi);
+            }}
             role="button" tabindex="0">
 
           <!-- rail -->
@@ -1065,8 +977,8 @@
                       onclick={e => { e.stopPropagation(); removeStop(i); }}>
                 <i class="ti ti-x"></i>
               </button>
-              {:else if s.poi}
-              <i class="ti ti-chevron-right tl-chev"></i>
+              {:else}
+              <i class="ti ti-pencil tl-edit-hint"></i>
               {/if}
             </div>
 
@@ -1448,6 +1360,61 @@
         <button class="btn btn-ghost" onclick={() => showSave = false}>Annulla</button>
         <button class="btn btn-primary" onclick={confirmSave}><i class="ti ti-check"></i> Salva</button>
       </div>
+    </div>
+  </div>
+  {/if}
+
+  <!-- ── OD Search sheet (partenza / destinazione) ─────────── -->
+  {#if odSearchActive}
+  <div class="od-sheet-backdrop" role="presentation"
+       onclick={closeOdSearch}
+       onkeydown={e => e.key === 'Escape' && closeOdSearch()}>
+    <div class="od-sheet" role="dialog" aria-modal="true"
+         aria-label={odSearchActive === 'start' ? 'Cerca partenza' : 'Cerca destinazione'}
+         tabindex="-1"
+         onclick={e => e.stopPropagation()}
+         onkeydown={e => e.stopPropagation()}>
+
+      <!-- Campo di ricerca -->
+      <div class="od-sheet-header">
+        <span class="od-sheet-dot {odSearchActive === 'start' ? 'od-sheet-dot--start' : 'od-sheet-dot--end'}"></span>
+        <input class="od-sheet-input"
+               type="text"
+               placeholder={odSearchActive === 'start' ? 'Cerca partenza…' : 'Cerca destinazione…'}
+               value={odQuery}
+               oninput={e => onOdQueryInput((e.target as HTMLInputElement).value)}
+               use:focusEl />
+        <button class="od-sheet-close" onclick={closeOdSearch} aria-label="chiudi">
+          <i class="ti ti-x"></i>
+        </button>
+      </div>
+
+      <!-- Risultati -->
+      <div class="od-sheet-results">
+        <button class="od-result od-result--location" onclick={selectMyLocation}>
+          <i class="ti ti-current-location"></i>
+          <span>La mia posizione attuale</span>
+        </button>
+
+        {#if odSearching}
+        <div class="od-result od-result--hint">
+          <i class="ti ti-loader-2 spin"></i> Cerco…
+        </div>
+        {:else if odResults.length === 0 && odQuery.length >= 2}
+        <div class="od-result od-result--hint">Nessun risultato per "{odQuery}"</div>
+        {:else}
+        {#each odResults as r}
+        <button class="od-result" onclick={() => selectGeoResult(r)}>
+          <i class="ti ti-map-pin"></i>
+          <div class="od-result-text">
+            <span class="od-result-name">{r.name}</span>
+            <span class="od-result-detail">{r.detail}</span>
+          </div>
+        </button>
+        {/each}
+        {/if}
+      </div>
+
     </div>
   </div>
   {/if}

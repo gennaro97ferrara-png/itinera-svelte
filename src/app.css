@@ -1182,6 +1182,52 @@ input[type="range"]::-moz-range-thumb {
 .load-step { font-size: 13px; font-weight: 600; color: var(--muted); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Edit hint sulle card start/end ────────────────────────── */
+.tl-edit-hint {
+  color: var(--muted); font-size: 16px; opacity: .5; flex-shrink: 0;
+  transition: opacity .15s;
+}
+.tl-row:hover .tl-edit-hint { opacity: 1; color: var(--accent); }
+
+/* ── OD Search sheet (bottom sheet) ────────────────────────── */
+.od-sheet-backdrop {
+  position: fixed; inset: 0; z-index: 800;
+  background: rgba(0,0,0,.4);
+  display: flex; align-items: flex-end; justify-content: center;
+  backdrop-filter: blur(2px);
+}
+.od-sheet {
+  width: 100%; max-width: var(--maxw);
+  background: var(--bg); border-radius: 24px 24px 0 0;
+  padding: 16px 0 env(safe-area-inset-bottom, 16px);
+  box-shadow: var(--shadow-lg);
+  animation: rise .22s var(--ease);
+  max-height: 80vh; display: flex; flex-direction: column;
+}
+.od-sheet-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 4px 16px 12px; border-bottom: 1px solid var(--line);
+}
+.od-sheet-dot {
+  width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+}
+.od-sheet-dot--start { background: var(--green); }
+.od-sheet-dot--end   { background: var(--accent); border: 2.5px solid var(--accent); }
+.od-sheet-input {
+  flex: 1; border: none; background: transparent;
+  font-family: inherit; font-size: 16px; font-weight: 600; color: var(--ink);
+  outline: none;
+}
+.od-sheet-input::placeholder { color: var(--muted); font-weight: 400; }
+.od-sheet-close {
+  width: 32px; height: 32px; border-radius: 50%; border: none; flex-shrink: 0;
+  background: var(--surface-2); color: var(--muted); font-size: 16px;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: var(--t);
+}
+.od-sheet-close:hover { color: var(--ink); }
+.od-sheet-results { overflow-y: auto; flex: 1; padding: 8px 8px 16px; }
+
 /* ── OD search ──────────────────────────────────────────────── */
 .od-search-input {
   flex: 1; border: none; background: transparent;
