@@ -177,11 +177,13 @@
     prefetchPhotos();   // carica le foto (Wikipedia) e le mostra appena pronte
   }
 
-  // Precarica le immagini delle tappe: se esiste una foto, sostituisce l'emoji
+  // Precarica le immagini delle tappe (Wikipedia / Wikidata / image OSM).
   function prefetchPhotos() {
     app.stops.forEach((s, i) => {
       const poi = s.poi;
-      if (!poi?.wiki || poi._sum) return;
+      // serve almeno una fonte immagine e non già risolto
+      if (!poi || poi._sum !== undefined) return;
+      if (!poi.wiki && !poi.wikidata && !poi.image) return;
       fetchSummary(poi).then(sm => {
         if (!sm?.img) return;
         const cur = app.stops[i];
@@ -332,6 +334,10 @@
   function catGrad(poi: import('$lib/domain/types').POI | null): string {
     const m = poi?.gem ? 'scoperte' : (poi?.macro ?? 'cultura');
     return MACRO_GRAD[m] ?? MACRO_GRAD.cultura;
+  }
+  // foto disponibile: riassunto Wikipedia/Wikidata già risolto, o URL diretto OSM
+  function poiImg(poi: import('$lib/domain/types').POI | null): string | null {
+    return poi?._sum?.img ?? poi?.image ?? null;
   }
 
   // Un colore (leggermente diverso) per ogni categoria
@@ -992,8 +998,9 @@
 
             <div class="tl-card">
               {#if isStop}
-              {#if s.poi?._sum?.img}
-              <div class="tl-photo" style="background-image:url({s.poi._sum.img})"></div>
+              {@const img = s.poi?._sum?.img ?? s.poi?.image}
+              {#if img}
+              <div class="tl-photo" style="background-image:url({img})"></div>
               {:else}
               <div class="tl-photo tl-photo--cat" style="background:{catGrad(s.poi)}">
                 <i class="ti {catIcon(s.poi)}"></i>
@@ -1101,8 +1108,8 @@
 
       <!-- Target card -->
       <div class="nav-target {navTarget.gem ? 'gem' : ''}">
-        {#if navTarget.poi?._sum?.img}
-        <div class="nav-target-thumb" style="background-image:url({navTarget.poi._sum.img}); background-size:cover"></div>
+        {#if poiImg(navTarget.poi)}
+        <div class="nav-target-thumb" style="background-image:url({poiImg(navTarget.poi)}); background-size:cover"></div>
         {:else}
         <div class="nav-target-thumb" style="background:{catGrad(navTarget.poi)}">
           <i class="ti {catIcon(navTarget.poi)}"></i>
@@ -1149,9 +1156,9 @@
     <section class="screen" in:fly={{ y: 10, duration: 220 }}>
 
       <!-- Hero -->
-      <div class="hero {poi._sum?.img ? '' : 'hero-cat'}"
-           style={poi._sum?.img ? `background-image:url(${poi._sum.img})` : `background:${catGrad(poi)}`}>
-        {#if !poi._sum?.img}
+      <div class="hero {poiImg(poi) ? '' : 'hero-cat'}"
+           style={poiImg(poi) ? `background-image:url(${poiImg(poi)})` : `background:${catGrad(poi)}`}>
+        {#if !poiImg(poi)}
         <i class="ti {catIcon(poi)} hero-cat-icon"></i>
         {/if}
         <button class="hero-back" aria-label="torna alle tappe"

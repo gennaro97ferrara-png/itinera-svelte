@@ -7,10 +7,53 @@ const ENDPOINTS = [
 ];
 const CLIENT_TIMEOUT_MS = 9000;  // taglio rapido: meglio i dati demo che un'attesa lunga
 
-// Cache in memoria: stessa zona + stessi interessi → risposta immediata
+// Cache a due livelli: memoria (immediata) + localStorage (persiste tra sessioni).
 const cache = new Map<string, POI[]>();
 function cacheKey(lat: number, lng: number, radius: number, cats: string[]): string {
   return `${lat.toFixed(3)},${lng.toFixed(3)},${radius},${[...cats].sort().join(',')}`;
+}
+
+const LS_PREFIX = 'itinera.op.';
+const LS_TTL    = 24 * 60 * 60 * 1000;   // 24h: i POI cambiano di rado
+
+function lsLoad(key: string): POI[] | null {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(LS_PREFIX + key);
+    if (!raw) return null;
+    const { t, pois } = JSON.parse(raw);
+    if (Date.now() - t > LS_TTL) { localStorage.removeItem(LS_PREFIX + key); return null; }
+    return pois as POI[];
+  } catch { return null; }
+}
+
+function lsSave(key: string, pois: POI[]): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(LS_PREFIX + key, JSON.stringify({ t: Date.now(), pois }));
+  } catch {
+    // quota piena: libera le voci più vecchie di Itinera e riprova una volta
+    try {
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith(LS_PREFIX)) localStorage.removeItem(k);
+      }
+      localStorage.setItem(LS_PREFIX + key, JSON.stringify({ t: Date.now(), pois }));
+    } catch { /* rinuncia silenziosamente */ }
+  }
+}
+
+// Cerca prima in memoria, poi su disco (promuovendo in memoria).
+function cacheGet(key: string): POI[] | null {
+  const mem = cache.get(key);
+  if (mem) return mem;
+  const disk = lsLoad(key);
+  if (disk) { cache.set(key, disk); return disk; }
+  return null;
+}
+
+function cacheSet(key: string, pois: POI[]): void {
+  cache.set(key, pois);
+  lsSave(key, pois);
 }
 
 const CAT_FILTERS: Record<string, { f: string; types: string[] }[]> = {
@@ -299,6 +342,9 @@ function elementToPoi(el: any): POI | null {
   const food = subs.some(s => ['ristoranti', 'pizza', 'panini', 'gelati', 'street', 'caffe'].includes(s));
   const website: string | undefined = tags.website ?? tags['contact:website'];
 
+  const imageTag: string | undefined =
+    (typeof tags.image === 'string' && /^https?:\/\//.test(tags.image)) ? tags.image : undefined;
+
   return {
     id:    `${el.type}_${el.id}`,
     name,
@@ -309,6 +355,8 @@ function elementToPoi(el: any): POI | null {
     visit: visitFor(subs),
     score: calcScore(tags, subs),
     wiki:  parseWikiTitle(tags),
+    wikidata: /^Q\d+$/.test(tags.wikidata ?? '') ? tags.wikidata : undefined,
+    image: imageTag,
     story: buildStory(tags, name),
     ticketUrl:  (!food && website) ? website : undefined,
     bookingUrl: (food && website)  ? website : undefined,
@@ -355,7 +403,7 @@ export async function fetchPois(
   lat: number, lng: number, radius: number, cats: string[]
 ): Promise<POI[]> {
   const key = cacheKey(lat, lng, radius, cats);
-  const hit = cache.get(key);
+  const hit = cacheGet(key);
   if (hit) return hit;
 
   const query = buildQuery(cats, lat, lng, radius);
@@ -363,7 +411,7 @@ export async function fetchPois(
   for (const endpoint of ENDPOINTS) {
     try {
       const pois = dedupe(await fetchFrom(endpoint, query));
-      cache.set(key, pois);
+      cacheSet(key, pois);
       return pois;
     } catch (e) {
       lastErr = e;   // prova l'endpoint successivo
@@ -376,7 +424,7 @@ export async function fetchPois(
 export async function fetchPoisInArea(bounds: Bounds, cats: string[]): Promise<POI[]> {
   const { south, west, north, east } = bounds;
   const key = `bbox:${south.toFixed(3)},${west.toFixed(3)},${north.toFixed(3)},${east.toFixed(3)},${[...cats].sort().join(',')}`;
-  const hit = cache.get(key);
+  const hit = cacheGet(key);
   if (hit) return hit;
 
   const query = buildBboxQuery(cats, south, west, north, east);
@@ -384,7 +432,7 @@ export async function fetchPoisInArea(bounds: Bounds, cats: string[]): Promise<P
   for (const endpoint of ENDPOINTS) {
     try {
       const pois = dedupe(await fetchFrom(endpoint, query));
-      cache.set(key, pois);
+      cacheSet(key, pois);
       return pois;
     } catch (e) {
       lastErr = e;

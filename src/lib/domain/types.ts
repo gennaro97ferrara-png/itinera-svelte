@@ -7,6 +7,8 @@ export interface POI {
   lng: number;
   visit?: number;
   wiki?: string | null;
+  wikidata?: string;        // Q-id da OSM → immagine via Wikidata P18
+  image?: string;           // URL immagine diretto dal tag OSM `image`
   story: string;
   gem?: boolean;
   storyAiGenerated?: boolean;
